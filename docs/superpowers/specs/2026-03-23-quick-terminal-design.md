@@ -24,7 +24,7 @@ Owns a dedicated `Window` instance configured for quick terminal behavior. Manag
 **Lifecycle:**
 1. First `toggle_quick_terminal` → `QuickTerminal.init()` creates Window + Surface, animates in
 2. Subsequent toggles → animate in/out, reuse existing window
-3. Shell exit / surface close → destroy QuickTerminal, next toggle creates fresh
+3. Shell exit / surface close → destroy QuickTerminal, set `app.quick_terminal = null`, next toggle creates fresh
 4. App shutdown → destroy if exists
 
 ### Separation from Normal Windows
@@ -34,32 +34,34 @@ Owns a dedicated `Window` instance configured for quick terminal behavior. Manag
 - The QuickTerminal's Window uses `WS_POPUP` instead of `WS_OVERLAPPEDWINDOW`
 - Tab bar is suppressed (single surface, no tabs)
 - No splits support in quick terminal
+- Quit timer check: `app.windows.items.len == 0 and app.quick_terminal == null` (must account for quick terminal when deciding whether to quit)
 
 ## Window Behavior
 
 ### Style
-- `WS_POPUP | WS_VISIBLE` — no title bar, no border, no system menu
-- Optional: `WS_EX_TOOLWINDOW` to hide from taskbar/Alt+Tab
+- Creation style: `WS_POPUP` only (no `WS_VISIBLE` — window is shown explicitly via `ShowWindow` during animation)
+- Extended style: `WS_EX_TOOLWINDOW` to hide from taskbar and Alt+Tab
 
 ### Z-Order
-- `HWND_TOPMOST` during slide-in animation (ensures visibility)
-- After animation completes: remains `HWND_TOPMOST` (quick terminal should stay above other windows)
-- On animate-out: no z-order change needed
+- `HWND_TOPMOST` — quick terminal stays above other windows at all times (matches macOS `.floating` level)
 
 ### Screen Selection
 - `main` (default): primary monitor via `MonitorFromPoint({0,0}, MONITOR_DEFAULTTOPRIMARY)`
 - `mouse`: monitor under cursor via `MonitorFromPoint(cursor_pos, MONITOR_DEFAULTTONEAREST)`
+- Recalculate target monitor on each `animateIn()` (handles monitor connect/disconnect)
 
 ### Size
-- Respects `quick-terminal-size` config
-- Default: full monitor width, 400px height (for top/bottom positions)
-- For left/right: 400px width, full monitor height
+- Respects `quick-terminal-size` config (DPI-scaled using `GetDpiForWindow`)
+- Default: full monitor work area width, 400 DPI-scaled pixels height (for top/bottom positions)
+- For left/right: 400 DPI-scaled pixels width, full monitor work area height
 
 ## Animation
 
 ### Mechanism
 - Uses `QueryPerformanceCounter` / `QueryPerformanceFrequency` for precise timing
 - `SetTimer()` with ~16ms interval (~60fps) drives the animation loop
+- Timer ID: `QUICK_TERMINAL_ANIM_TIMER_ID = 3` (alongside existing QUIT_TIMER_ID=1, notification cleanup=2)
+- Timer is set on `msg_hwnd`; `WM_TIMER` handled in `msgWndProc`
 - Each `WM_TIMER` tick: calculate elapsed time, compute eased progress, `SetWindowPos()` to interpolate position
 
 ### Easing Function
@@ -89,9 +91,23 @@ Interpolation: `current = hidden + (visible - hidden) * eased_progress`
 
 ### Animation Flow
 1. `animateIn()`: set `animation_direction = .in`, record start time, `ShowWindow(SW_SHOWNOACTIVATE)`, start timer
-2. Timer tick: compute progress, `SetWindowPos()`, if progress >= 1.0 → kill timer, `SetForegroundWindow()`
+2. Timer tick: compute progress, `SetWindowPos()`, if progress >= 1.0 → kill timer, force foreground (see below)
 3. `animateOut()`: set `animation_direction = .out`, record start time, start timer
 4. Timer tick: compute progress, `SetWindowPos()`, if progress >= 1.0 → kill timer, `ShowWindow(SW_HIDE)`
+
+### Forcing Foreground Focus
+
+`SetForegroundWindow()` silently fails when called from a background process (flashes taskbar instead). When the quick terminal is toggled via global hotkey, Ghostty is in the background. Use the `AttachThreadInput` technique:
+
+```
+foreground_tid = GetWindowThreadProcessId(GetForegroundWindow(), null)
+our_tid = GetCurrentThreadId()
+AttachThreadInput(our_tid, foreground_tid, TRUE)
+SetForegroundWindow(qt_hwnd)
+AttachThreadInput(our_tid, foreground_tid, FALSE)
+```
+
+This is called after animation completes to give the quick terminal keyboard focus.
 
 ### Interruption
 If toggle is called mid-animation, reverse direction from current progress (don't restart from 0).
@@ -100,16 +116,18 @@ If toggle is called mid-animation, reverse direction from current progress (don'
 
 ### Registration
 - At `App.init()`, scan keybinds for entries with `global:` prefix bound to `toggle_quick_terminal`
-- Call `RegisterHotKey(msg_hwnd, hotkey_id, modifiers, vk)` on the message-only window
+- Call `RegisterHotKey(NULL, hotkey_id, modifiers, vk)` with NULL hwnd (thread-level)
+- If `RegisterHotKey` fails (hotkey already taken by another app), log a warning
 - Store the registration so it can be unregistered at cleanup
 - Default binding (if none configured): none (user must opt-in via config)
 
 ### Message Handling
-- `WM_HOTKEY` arrives on `GhosttyMsg` window proc
+- `WM_HOTKEY` is posted to the thread's message queue (not to a specific window)
+- Handle in the message loop in `App.run()` before `TranslateMessage`/`DispatchMessage`, similar to existing search key interception
 - Dispatch: call `app.performAction(.app, .toggle_quick_terminal, {})`
 
 ### Unregistration
-- `App.deinit()`: `UnregisterHotKey(msg_hwnd, hotkey_id)`
+- `App.deinit()`: `UnregisterHotKey(NULL, hotkey_id)`
 
 ### Modifier Mapping
 - `ctrl` → `MOD_CONTROL`
@@ -119,10 +137,19 @@ If toggle is called mid-animation, reverse direction from current progress (don'
 
 ## Autohide
 
-- Quick terminal window handles `WM_ACTIVATE` with `WA_INACTIVE`
+- Handle `WM_ACTIVATE` with `WA_INACTIVE` in `windowWndProc` (guarded by `window.is_quick_terminal` check, consistent with existing `is_fullscreen` pattern)
 - If `quick-terminal-autohide` config is true and window is visible and not animating out → animate out
 - Ignore focus loss during animation (prevents flicker)
 - Ignore focus loss to own child windows (e.g., if search bar is open)
+
+## Shell Exit / Surface Close
+
+When the quick terminal's shell exits:
+1. `closeTabByIndex` is called (single tab, tab_count drops to 0)
+2. Normally this posts `WM_CLOSE` → `Window.close()` → `Window.onDestroy()`
+3. For quick terminal: `onDestroy()` detects `is_quick_terminal` flag
+4. Instead of removing from `app.windows`, sets `app.quick_terminal = null` and frees the QuickTerminal
+5. The quit timer check accounts for this: `app.windows.items.len == 0 and app.quick_terminal == null`
 
 ## Changes to Existing Files
 
@@ -132,17 +159,20 @@ If toggle is called mid-animation, reverse direction from current progress (don'
 - Handle `.toggle_quick_terminal` in `performAction()` → delegate to `QuickTerminal.toggle()`
 - Register global hotkey in `init()`
 - Unregister in `deinit()`
-- Handle `WM_HOTKEY` in `msgWndProc()`
-- Handle `WM_TIMER` for quick terminal animation
+- Handle `WM_HOTKEY` in message loop (`run()`) before `DispatchMessage`
+- Handle `WM_TIMER` with `QUICK_TERMINAL_ANIM_TIMER_ID` in `msgWndProc()`
+- Update quit timer check to account for quick terminal existence
 
 ### `Window.zig`
 - Add `is_quick_terminal: bool = false` flag
 - Skip tab bar rendering when `is_quick_terminal`
 - Use `WS_POPUP` instead of `WS_OVERLAPPEDWINDOW` when `is_quick_terminal`
-- Skip `WS_EX_TOOLWINDOW` for taskbar hiding
+- Use `WS_EX_TOOLWINDOW` extended style when `is_quick_terminal`
+- Handle `WM_ACTIVATE` with `WA_INACTIVE` for autohide (when `is_quick_terminal`)
+- On destroy: route to `app.quick_terminal` cleanup instead of `app.windows` removal
 
 ### `win32.zig`
-- Add API declarations: `RegisterHotKey`, `UnregisterHotKey`, `MonitorFromPoint`, `GetMonitorInfoW`, `MONITORINFO`, `SetTimer`, `KillTimer`, `QueryPerformanceCounter`, `QueryPerformanceFrequency`, `WM_HOTKEY`, `WM_TIMER`, `WM_ACTIVATE`, `WA_INACTIVE`, `HWND_TOPMOST`, `SWP_NOACTIVATE`, `MONITOR_DEFAULTTOPRIMARY`, `MONITOR_DEFAULTTONEAREST`, `MOD_CONTROL`, `MOD_ALT`, `MOD_SHIFT`, `MOD_WIN`, `SW_SHOWNOACTIVATE`
+- Add API declarations: `RegisterHotKey`, `UnregisterHotKey`, `MonitorFromPoint`, `GetMonitorInfoW`, `MONITORINFO`, `SetTimer`, `KillTimer`, `QueryPerformanceCounter`, `QueryPerformanceFrequency`, `GetCurrentThreadId`, `AttachThreadInput`, `GetForegroundWindow`, `WM_HOTKEY`, `WM_TIMER`, `WM_ACTIVATE`, `WA_INACTIVE`, `HWND_TOPMOST`, `SWP_NOACTIVATE`, `MONITOR_DEFAULTTOPRIMARY`, `MONITOR_DEFAULTTONEAREST`, `MOD_CONTROL`, `MOD_ALT`, `MOD_SHIFT`, `MOD_WIN`, `SW_SHOWNOACTIVATE`
 
 ## Environment Variable
 
@@ -153,7 +183,7 @@ Set `GHOSTTY_QUICK_TERMINAL=1` on the surface's child process environment, match
 | Config | Used For |
 |--------|----------|
 | `quick-terminal-position` | Slide direction and final position |
-| `quick-terminal-size` | Window dimensions |
+| `quick-terminal-size` | Window dimensions (DPI-scaled) |
 | `quick-terminal-animation-duration` | Animation speed |
 | `quick-terminal-autohide` | Hide on focus loss |
 | `quick-terminal-screen` | Which monitor (`main` / `mouse`) |
@@ -165,3 +195,4 @@ Set `GHOSTTY_QUICK_TERMINAL=1` on the surface's child process environment, match
 - `quick-terminal-keyboard-interactivity` — Wayland-specific
 - Tab support in quick terminal (none on any platform)
 - Split support in quick terminal (none on any platform)
+- Config hot-reload of position/size while quick terminal is open (recalculates on next toggle)
