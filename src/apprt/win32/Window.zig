@@ -1219,6 +1219,88 @@ fn handleTabBarMouseMove(self: *Window, x: i16, y: i16) void {
     }
 }
 
+// Context menu command IDs.
+const TAB_CTX_CLOSE: usize = 9001;
+const TAB_CTX_CLOSE_OTHERS: usize = 9002;
+const TAB_CTX_CLOSE_RIGHT: usize = 9003;
+const TAB_CTX_NEW_TAB: usize = 9004;
+
+/// Handle a right-button click in the tab bar region.
+/// Shows a context menu for the clicked tab.
+fn handleTabBarRightClick(self: *Window, x: i16, y: i16) void {
+    if (!self.tab_bar_visible) return;
+    if (y >= self.tabBarHeight()) return;
+
+    // Hit-test to find which tab was right-clicked.
+    var clicked_tab: ?usize = null;
+    for (0..self.tab_count) |i| {
+        const rect = self.tab_rects[i];
+        if (x >= rect.left and x < rect.right) {
+            clicked_tab = i;
+            break;
+        }
+    }
+
+    // If clicked on empty area (not a tab), only show "New Tab".
+    const menu = w32.CreatePopupMenu() orelse return;
+    defer _ = w32.DestroyMenu(menu);
+
+    if (clicked_tab) |tab| {
+        _ = w32.AppendMenuW(menu, w32.MF_STRING, TAB_CTX_CLOSE, std.unicode.utf8ToUtf16LeStringLiteral("Close Tab"));
+        _ = w32.AppendMenuW(menu, if (self.tab_count > 1) w32.MF_STRING else w32.MF_GRAYED, TAB_CTX_CLOSE_OTHERS, std.unicode.utf8ToUtf16LeStringLiteral("Close Other Tabs"));
+        _ = w32.AppendMenuW(menu, if (tab + 1 < self.tab_count) w32.MF_STRING else w32.MF_GRAYED, TAB_CTX_CLOSE_RIGHT, std.unicode.utf8ToUtf16LeStringLiteral("Close Tabs to the Right"));
+        _ = w32.AppendMenuW(menu, w32.MF_SEPARATOR, 0, null);
+    }
+    _ = w32.AppendMenuW(menu, w32.MF_STRING, TAB_CTX_NEW_TAB, std.unicode.utf8ToUtf16LeStringLiteral("New Tab"));
+
+    // Convert client coords to screen coords for the popup.
+    var pt = w32.POINT{ .x = @intCast(x), .y = @intCast(y) };
+    if (self.hwnd) |h| _ = w32.ClientToScreen(h, &pt);
+
+    const cmd = w32.TrackPopupMenuEx(
+        menu,
+        w32.TPM_LEFTALIGN | w32.TPM_TOPALIGN | w32.TPM_RETURNCMD,
+        pt.x,
+        pt.y,
+        self.hwnd.?,
+        null,
+    );
+
+    switch (@as(usize, @intCast(cmd))) {
+        TAB_CTX_CLOSE => {
+            if (clicked_tab) |tab| self.closeTabByIndex(tab);
+        },
+        TAB_CTX_CLOSE_OTHERS => {
+            if (clicked_tab) |tab| {
+                var current = tab;
+                var i: usize = self.tab_count;
+                while (i > 0) {
+                    i -= 1;
+                    if (i != current) {
+                        self.closeTabByIndex(i);
+                        if (i < current) current -= 1;
+                    }
+                }
+            }
+        },
+        TAB_CTX_CLOSE_RIGHT => {
+            if (clicked_tab) |tab| {
+                var i: usize = self.tab_count;
+                while (i > tab + 1) {
+                    i -= 1;
+                    self.closeTabByIndex(i);
+                }
+            }
+        },
+        TAB_CTX_NEW_TAB => {
+            _ = self.addTab() catch |err| {
+                log.err("failed to create new tab: {}", .{err});
+            };
+        },
+        else => {},
+    }
+}
+
 /// Handle WM_MOUSELEAVE: reset all hover state and repaint.
 fn handleTabBarMouseLeave(self: *Window) void {
     self.tracking_mouse = false;
@@ -1367,6 +1449,15 @@ pub fn windowWndProc(
                 return 0;
             }
             return 0;
+        },
+        w32.WM_RBUTTONUP => {
+            const x: i16 = @truncate(lparam & 0xFFFF);
+            const y: i16 = @truncate((lparam >> 16) & 0xFFFF);
+            if (y < window.tabBarHeight()) {
+                window.handleTabBarRightClick(x, y);
+                return 0;
+            }
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         w32.WM_MOUSEMOVE => {
             const x: i32 = @as(i16, @truncate(lparam & 0xFFFF));

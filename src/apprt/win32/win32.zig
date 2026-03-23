@@ -414,6 +414,11 @@ pub extern "user32" fn ScreenToClient(
     lpPoint: *POINT,
 ) callconv(.c) i32;
 
+pub extern "user32" fn ClientToScreen(
+    hWnd: HWND,
+    lpPoint: *POINT,
+) callconv(.c) i32;
+
 pub extern "user32" fn GetParent(
     hWnd: HWND,
 ) callconv(.c) ?HWND;
@@ -994,4 +999,38 @@ pub const TME_LEAVE: u32 = 0x00000002;
 
 pub extern "user32" fn TrackMouseEvent(
     lpEventTrack: *TRACKMOUSEEVENT,
+) callconv(.c) i32;
+
+// -----------------------------------------------------------------------
+// Popup menu API
+// -----------------------------------------------------------------------
+
+pub const MF_STRING: u32 = 0x00000000;
+pub const MF_SEPARATOR: u32 = 0x00000800;
+pub const MF_GRAYED: u32 = 0x00000001;
+
+pub const TPM_LEFTALIGN: u32 = 0x0000;
+pub const TPM_TOPALIGN: u32 = 0x0000;
+pub const TPM_RETURNCMD: u32 = 0x0100;
+
+pub extern "user32" fn CreatePopupMenu() callconv(.c) ?HMENU;
+
+pub extern "user32" fn AppendMenuW(
+    hMenu: HMENU,
+    uFlags: u32,
+    uIDNewItem: usize,
+    lpNewItem: ?[*:0]const u16,
+) callconv(.c) i32;
+
+pub extern "user32" fn TrackPopupMenuEx(
+    hMenu: HMENU,
+    uFlags: u32,
+    x: i32,
+    y: i32,
+    hwnd: HWND,
+    lptpm: ?*const anyopaque,
+) callconv(.c) i32;
+
+pub extern "user32" fn DestroyMenu(
+    hMenu: HMENU,
 ) callconv(.c) i32;
