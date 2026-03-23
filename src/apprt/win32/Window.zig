@@ -9,6 +9,7 @@ const apprt = @import("../../apprt.zig");
 
 const App = @import("App.zig");
 const Surface = @import("Surface.zig");
+const SplitTree = @import("../../datastruct/split_tree.zig").SplitTree;
 const w32 = @import("win32.zig");
 
 const log = std.log.scoped(.win32);
@@ -22,9 +23,12 @@ app: *App,
 /// The top-level window handle.
 hwnd: ?w32.HWND = null,
 
-/// Tab surfaces owned by this window (fixed-capacity inline array).
+/// Tab split trees owned by this window (fixed-capacity inline array).
 tab_count: usize = 0,
-tab_surfaces: [64]*Surface = undefined,
+tab_trees: [64]SplitTree(Surface) = undefined,
+
+/// The currently focused surface within each tab.
+tab_active_surface: [64]*Surface = undefined,
 
 /// Index of the currently active (visible) tab.
 active_tab: usize = 0,
@@ -161,13 +165,7 @@ pub fn init(self: *Window, app: *App) !void {
 /// Deinitialize the Window: close all tabs, delete font, destroy HWND.
 pub fn deinit(self: *Window) void {
     // Close all tab surfaces.
-    const alloc = self.app.core_app.alloc;
-    while (self.tab_count > 0) {
-        self.tab_count -= 1;
-        const surface = self.tab_surfaces[self.tab_count];
-        surface.deinit();
-        alloc.destroy(surface);
-    }
+    self.cleanupAllSurfaces();
 
     // Delete the tab bar font.
     if (self.tab_font) |font| {
@@ -205,7 +203,31 @@ pub fn surfaceRect(self: *const Window) w32.RECT {
 /// Returns the currently active Surface, or null if there are no tabs.
 pub fn getActiveSurface(self: *Window) ?*Surface {
     if (self.tab_count == 0) return null;
-    return self.tab_surfaces[self.active_tab];
+    return self.tab_active_surface[self.active_tab];
+}
+
+/// Find the tab index containing a given surface.
+/// Checks tab_active_surface first, then scans all trees.
+pub fn findTabIndex(self: *Window, surface: *Surface) ?usize {
+    for (self.tab_active_surface[0..self.tab_count], 0..) |s, i| {
+        if (s == surface) return i;
+    }
+    for (0..self.tab_count) |i| {
+        var it = self.tab_trees[i].iterator();
+        while (it.next()) |entry| {
+            if (entry.view == surface) return i;
+        }
+    }
+    return null;
+}
+
+/// Find the Node.Handle for a surface in a given tab's tree.
+fn findHandle(self: *Window, tab_idx: usize, surface: *Surface) ?SplitTree(Surface).Node.Handle {
+    var it = self.tab_trees[tab_idx].iterator();
+    while (it.next()) |entry| {
+        if (entry.view == surface) return entry.handle;
+    }
+    return null;
 }
 
 /// Add a new tab surface to this window. The surface is created,
@@ -215,8 +237,15 @@ pub fn addTab(self: *Window) !*Surface {
 
     const alloc = self.app.core_app.alloc;
     const surface = try alloc.create(Surface);
-    errdefer alloc.destroy(surface);
     try surface.init(self.app, self);
+    // After surface.init succeeds, create the SplitTree which takes ownership
+    // via ref(). If this fails, we manually clean up.
+    var tree = SplitTree(Surface).init(alloc, surface) catch |err| {
+        surface.deinit();
+        alloc.destroy(surface);
+        return err;
+    };
+    errdefer tree.deinit(); // tree.deinit() calls unref() which deinits+frees surface
 
     // Determine insert position based on config.
     const pos: usize = switch (self.app.config.@"window-new-tab-position") {
@@ -227,11 +256,13 @@ pub fn addTab(self: *Window) !*Surface {
     // Shift elements right to make room at pos.
     var i: usize = self.tab_count;
     while (i > pos) : (i -= 1) {
-        self.tab_surfaces[i] = self.tab_surfaces[i - 1];
+        self.tab_trees[i] = self.tab_trees[i - 1];
+        self.tab_active_surface[i] = self.tab_active_surface[i - 1];
         self.tab_titles[i] = self.tab_titles[i - 1];
         self.tab_title_lens[i] = self.tab_title_lens[i - 1];
     }
-    self.tab_surfaces[pos] = surface;
+    self.tab_trees[pos] = tree;
+    self.tab_active_surface[pos] = surface;
     self.tab_count += 1;
 
     // Set default title.
@@ -257,44 +288,29 @@ pub fn addTab(self: *Window) !*Surface {
 }
 
 /// Close a tab by surface pointer. Removes from the tab list,
-/// deinits the surface, and adjusts the active tab index.
-/// TRACE: log caller for debugging.
+/// deinits the tree, and adjusts the active tab index.
 pub fn closeTab(self: *Window, surface: *Surface) void {
     log.debug("closeTab called for surface={x} tab_count={}", .{ @intFromPtr(surface), self.tab_count });
-    // Find tab index.
-    var tab_idx: ?usize = null;
-    for (self.tab_surfaces[0..self.tab_count], 0..) |s, i| {
-        if (s == surface) {
-            tab_idx = i;
-            break;
-        }
-    }
-    const idx = tab_idx orelse return;
+    const idx = self.findTabIndex(surface) orelse return;
+    self.closeTabByIndex(idx);
+}
 
-    // Hide and destroy.
-    if (surface.hwnd) |h| _ = w32.ShowWindow(h, w32.SW_HIDE);
-    surface.deinit();
-    self.app.core_app.alloc.destroy(surface);
-
-    // Shift left to fill gap.
+fn closeTabByIndex(self: *Window, idx: usize) void {
+    if (idx >= self.tab_count) return;
+    var tree = self.tab_trees[idx];
+    tree.deinit(); // This unrefs all surfaces → Surface.unref frees when ref_count=0
     var i: usize = idx;
     while (i + 1 < self.tab_count) : (i += 1) {
-        self.tab_surfaces[i] = self.tab_surfaces[i + 1];
+        self.tab_trees[i] = self.tab_trees[i + 1];
+        self.tab_active_surface[i] = self.tab_active_surface[i + 1];
         self.tab_titles[i] = self.tab_titles[i + 1];
         self.tab_title_lens[i] = self.tab_title_lens[i + 1];
     }
     self.tab_count -= 1;
-
     if (self.tab_count == 0) {
-        // Last tab closed — post WM_CLOSE to defer destruction.
-        // We can't call DestroyWindow synchronously here because
-        // closeTab is called from inside core_surface callbacks
-        // (during tick), and synchronous destruction causes reentrancy.
         if (self.hwnd) |hwnd| _ = w32.PostMessageW(hwnd, w32.WM_CLOSE, 0, 0);
         return;
     }
-
-    // Adjust active tab.
     if (self.active_tab >= self.tab_count) {
         self.active_tab = self.tab_count - 1;
     } else if (self.active_tab > idx) {
@@ -307,27 +323,73 @@ pub fn closeTab(self: *Window, surface: *Surface) void {
 /// Switch to the tab at the given index.
 pub fn selectTabIndex(self: *Window, idx: usize) void {
     if (idx >= self.tab_count) return;
-
-    // Hide current tab.
     if (self.active_tab < self.tab_count) {
-        if (self.tab_surfaces[self.active_tab].hwnd) |h| {
-            _ = w32.ShowWindow(h, w32.SW_HIDE);
+        var it = self.tab_trees[self.active_tab].iterator();
+        while (it.next()) |entry| {
+            if (entry.view.hwnd) |h| _ = w32.ShowWindow(h, w32.SW_HIDE);
         }
     }
-
     self.active_tab = idx;
-    const surface = self.tab_surfaces[idx];
-
-    // Resize and show the new active tab.
-    const sr = self.surfaceRect();
-    if (surface.hwnd) |h| {
-        // Only resize if necessary — avoid triggering WM_SIZE on a
-        // freshly-initialized surface whose ConPTY just started.
-        _ = w32.MoveWindow(h, sr.left, sr.top, @intCast(@max(sr.right - sr.left, 1)), @intCast(@max(sr.bottom - sr.top, 1)), 1);
-        _ = w32.ShowWindow(h, w32.SW_SHOW);
-        _ = w32.SetFocus(h);
-    }
+    const surface = self.tab_active_surface[idx];
+    self.layoutSplits();
+    if (surface.hwnd) |h| _ = w32.SetFocus(h);
     self.updateWindowTitle();
+}
+
+/// Layout split panes for the active tab.
+pub fn layoutSplits(self: *Window) void {
+    if (self.tab_count == 0) return;
+    const tree = self.tab_trees[self.active_tab];
+    const rect = self.surfaceRect();
+    if (tree.zoomed) |zoomed_handle| {
+        var it = tree.iterator();
+        while (it.next()) |entry| {
+            if (entry.handle == zoomed_handle) {
+                if (entry.view.hwnd) |h| {
+                    const w = @max(rect.right - rect.left, 1);
+                    const ht = @max(rect.bottom - rect.top, 1);
+                    _ = w32.MoveWindow(h, rect.left, rect.top, @intCast(w), @intCast(ht), 1);
+                    _ = w32.ShowWindow(h, w32.SW_SHOW);
+                }
+            } else {
+                if (entry.view.hwnd) |h| _ = w32.ShowWindow(h, w32.SW_HIDE);
+            }
+        }
+        return;
+    }
+    self.layoutNode(tree, .root, rect);
+}
+
+fn layoutNode(self: *Window, tree: SplitTree(Surface), handle: SplitTree(Surface).Node.Handle, rect: w32.RECT) void {
+    if (handle.idx() >= tree.nodes.len) return;
+    switch (tree.nodes[handle.idx()]) {
+        .leaf => |view| {
+            if (view.hwnd) |h| {
+                const w = @max(rect.right - rect.left, 1);
+                const ht = @max(rect.bottom - rect.top, 1);
+                _ = w32.MoveWindow(h, rect.left, rect.top, @intCast(w), @intCast(ht), 1);
+                _ = w32.ShowWindow(h, w32.SW_SHOW);
+            }
+        },
+        .split => |s| {
+            const gap: i32 = @intFromFloat(@round(5.0 * self.scale));
+            if (s.layout == .horizontal) {
+                const total_w = rect.right - rect.left;
+                const split_x = rect.left + @as(i32, @intFromFloat(@as(f32, @floatCast(s.ratio)) * @as(f32, @floatFromInt(total_w))));
+                const left_rect = w32.RECT{ .left = rect.left, .top = rect.top, .right = split_x - @divTrunc(gap, 2), .bottom = rect.bottom };
+                const right_rect = w32.RECT{ .left = split_x + @divTrunc(gap + 1, 2), .top = rect.top, .right = rect.right, .bottom = rect.bottom };
+                self.layoutNode(tree, s.left, left_rect);
+                self.layoutNode(tree, s.right, right_rect);
+            } else {
+                const total_h = rect.bottom - rect.top;
+                const split_y = rect.top + @as(i32, @intFromFloat(@as(f32, @floatCast(s.ratio)) * @as(f32, @floatFromInt(total_h))));
+                const top_rect = w32.RECT{ .left = rect.left, .top = rect.top, .right = rect.right, .bottom = split_y - @divTrunc(gap, 2) };
+                const bottom_rect = w32.RECT{ .left = rect.left, .top = split_y + @divTrunc(gap + 1, 2), .right = rect.right, .bottom = rect.bottom };
+                self.layoutNode(tree, s.left, top_rect);
+                self.layoutNode(tree, s.right, bottom_rect);
+            }
+        },
+    }
 }
 
 /// Navigate to a tab by GotoTab target (previous, next, last, or index).
@@ -361,18 +423,14 @@ fn updateWindowTitle(self: *Window) void {
 /// Called when a tab's title changes. Updates the stored title
 /// and refreshes the window title bar / tab bar if needed.
 pub fn onTabTitleChanged(self: *Window, surface: *Surface, title: [:0]const u8) void {
-    for (self.tab_surfaces[0..self.tab_count], 0..) |s, i| {
-        if (s == surface) {
-            var wbuf: [256]u16 = undefined;
-            const wlen = std.unicode.utf8ToUtf16Le(&wbuf, title) catch 0;
-            const len: u16 = @intCast(@min(wlen, 255));
-            @memcpy(self.tab_titles[i][0..len], wbuf[0..len]);
-            self.tab_title_lens[i] = len;
-            if (i == self.active_tab) self.updateWindowTitle();
-            self.invalidateTabBar();
-            return;
-        }
-    }
+    const tab_idx = self.findTabIndex(surface) orelse return;
+    var wbuf: [256]u16 = undefined;
+    const wlen = std.unicode.utf8ToUtf16Le(&wbuf, title) catch 0;
+    const len: u16 = @intCast(@min(wlen, 255));
+    @memcpy(self.tab_titles[tab_idx][0..len], wbuf[0..len]);
+    self.tab_title_lens[tab_idx] = len;
+    if (tab_idx == self.active_tab) self.updateWindowTitle();
+    self.invalidateTabBar();
 }
 
 /// Update tab bar visibility based on config and tab count.
@@ -680,23 +738,9 @@ pub fn toggleWindowDecorations(self: *Window) void {
         w32.SWP_NOZORDER | w32.SWP_FRAMECHANGED | w32.SWP_NOMOVE | w32.SWP_NOSIZE);
 }
 
-/// Handle WM_SIZE: resize the active surface's child HWND to fill
-/// the available client area (below the tab bar).
+/// Handle WM_SIZE: re-layout the active tab's split panes and repaint tab bar.
 fn handleResize(self: *Window) void {
-    const rect = self.surfaceRect();
-    if (self.getActiveSurface()) |surface| {
-        if (surface.hwnd) |h| {
-            _ = w32.MoveWindow(
-                h,
-                rect.left,
-                rect.top,
-                @intCast(rect.right - rect.left),
-                @intCast(rect.bottom - rect.top),
-                1,
-            );
-        }
-    }
-    // Repaint the tab bar since its width changed.
+    self.layoutSplits();
     self.invalidateTabBar();
 }
 
@@ -724,7 +768,7 @@ fn handleTabBarClick(self: *Window, x: i16, y: i16) void {
             // Check close button area (right side of tab).
             const close_left = rect.right - close_btn_w - @divTrunc(text_pad, 2);
             if (x >= close_left) {
-                self.closeTab(self.tab_surfaces[i]);
+                self.closeTabByIndex(i);
             } else {
                 self.selectTabIndex(i);
                 self.invalidateTabBar();
@@ -808,16 +852,13 @@ pub fn close(self: *Window) void {
     }
 }
 
-/// Deinit and free all tab surfaces, cleaning up OpenGL contexts and DCs
-/// while HWNDs are still valid.
+/// Deinit and free all tab trees (which unrefs and frees surfaces).
 fn cleanupAllSurfaces(self: *Window) void {
-    const alloc = self.app.core_app.alloc;
-    while (self.tab_count > 0) {
-        self.tab_count -= 1;
-        const surface = self.tab_surfaces[self.tab_count];
-        surface.deinit();
-        alloc.destroy(surface);
+    for (0..self.tab_count) |i| {
+        var tree = self.tab_trees[i];
+        tree.deinit();
     }
+    self.tab_count = 0;
 }
 
 /// Handle WM_DESTROY: remove this window from the App's list,
@@ -870,11 +911,17 @@ pub fn windowWndProc(
             return 0;
         },
         w32.WM_ENTERSIZEMOVE => {
-            if (window.getActiveSurface()) |s| s.in_live_resize = true;
+            if (window.tab_count > 0) {
+                var it = window.tab_trees[window.active_tab].iterator();
+                while (it.next()) |entry| entry.view.in_live_resize = true;
+            }
             return 0;
         },
         w32.WM_EXITSIZEMOVE => {
-            if (window.getActiveSurface()) |s| s.in_live_resize = false;
+            if (window.tab_count > 0) {
+                var it = window.tab_trees[window.active_tab].iterator();
+                while (it.next()) |entry| entry.view.in_live_resize = false;
+            }
             return 0;
         },
         w32.WM_CLOSE => {
