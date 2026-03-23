@@ -539,11 +539,13 @@ pub fn performAction(
         },
 
         .close_tab => {
-            // Close the current surface (same as close_window for now).
             switch (target) {
                 .app => {},
                 .surface => |core_surface| {
-                    core_surface.rt_surface.close(false);
+                    core_surface.rt_surface.parent_window.closeTabMode(
+                        value,
+                        core_surface.rt_surface,
+                    );
                 },
             }
             return true;

@@ -320,6 +320,32 @@ fn closeTabByIndex(self: *Window, idx: usize) void {
     self.updateTabBarVisibility();
 }
 
+/// Close tabs based on mode: this (current), other (all but current), right (all after current).
+pub fn closeTabMode(self: *Window, mode: apprt.action.CloseTabMode, surface: *Surface) void {
+    switch (mode) {
+        .this => self.closeTab(surface),
+        .other => {
+            var current = self.findTabIndex(surface) orelse return;
+            var i: usize = self.tab_count;
+            while (i > 0) {
+                i -= 1;
+                if (i != current) {
+                    self.closeTabByIndex(i);
+                    if (i < current) current -= 1;
+                }
+            }
+        },
+        .right => {
+            const current = self.findTabIndex(surface) orelse return;
+            var i: usize = self.tab_count;
+            while (i > current + 1) {
+                i -= 1;
+                self.closeTabByIndex(i);
+            }
+        },
+    }
+}
+
 /// Switch to the tab at the given index.
 pub fn selectTabIndex(self: *Window, idx: usize) void {
     if (idx >= self.tab_count) return;
