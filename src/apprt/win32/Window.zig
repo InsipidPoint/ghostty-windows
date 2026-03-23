@@ -329,7 +329,7 @@ fn closeTabByIndex(self: *Window, idx: usize) void {
 /// Close tabs based on mode: this (current), other (all but current), right (all after current).
 pub fn closeTabMode(self: *Window, mode: apprt.action.CloseTabMode, surface: *Surface) void {
     switch (mode) {
-        .this => self.closeTab(surface),
+        .this => self.closeSplitSurface(surface),
         .other => {
             var current = self.findTabIndex(surface) orelse return;
             var i: usize = self.tab_count;
@@ -356,39 +356,54 @@ pub fn closeTabMode(self: *Window, mode: apprt.action.CloseTabMode, surface: *Su
 /// in the tab, close the entire tab instead.
 pub fn closeSplitSurface(self: *Window, surface: *Surface) void {
     const alloc = self.app.core_app.alloc;
-    const tab = self.findTabIndex(surface) orelse return;
+    const tab = self.findTabIndex(surface) orelse {
+        log.debug("closeSplitSurface: surface not found in any tab", .{});
+        return;
+    };
     const tree = &self.tab_trees[tab];
 
     if (!tree.isSplit()) {
+        log.debug("closeSplitSurface: not split, closing whole tab", .{});
         self.closeTab(surface);
         return;
     }
 
-    const handle = self.findHandle(tab, surface) orelse return;
+    const handle = self.findHandle(tab, surface) orelse {
+        log.debug("closeSplitSurface: handle not found", .{});
+        return;
+    };
+    log.debug("closeSplitSurface: removing handle={} from tab={}", .{ handle.idx(), tab });
 
+    // Find next focus target BEFORE removing.
     const next_handle = (tree.goto(alloc, handle, .next) catch null) orelse
         (tree.goto(alloc, handle, .previous) catch null);
-    const next_surface: ?*Surface = if (next_handle) |nh|
-        switch (tree.nodes[nh.idx()]) {
+
+    // Extract the surface pointer from the next handle before we modify the tree.
+    const next_surface: ?*Surface = if (next_handle) |nh| blk: {
+        break :blk switch (tree.nodes[nh.idx()]) {
             .leaf => |v| v,
             .split => null,
-        }
-    else
-        null;
+        };
+    } else null;
+    log.debug("closeSplitSurface: has_next={}", .{next_surface != null});
 
     const new_tree = tree.remove(alloc, handle) catch {
         log.err("failed to remove surface from split tree", .{});
         return;
     };
+    log.debug("closeSplitSurface: remove returned, new_tree nodes={}", .{new_tree.nodes.len});
+
     var old_tree = self.tab_trees[tab];
     old_tree.deinit();
     self.tab_trees[tab] = new_tree;
 
     if (next_surface) |ns| {
+        log.debug("closeSplitSurface: focusing next surface", .{});
         self.tab_active_surface[tab] = ns;
         self.layoutSplits();
         if (ns.hwnd) |h| _ = w32.SetFocus(h);
     } else {
+        log.debug("closeSplitSurface: no next surface, closing tab", .{});
         self.closeTabByIndex(tab);
     }
 }
