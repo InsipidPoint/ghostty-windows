@@ -1068,6 +1068,10 @@ fn keyToVk(key: @import("../../input/key.zig").Key) ?u32 {
 // Update Checker
 // -----------------------------------------------------------------------
 
+/// Windows release version. Bump this when creating a new release.
+/// Must match the tag format on GitHub (without the "v" prefix).
+const WIN_VERSION = "1.0.0";
+
 /// GitHub releases API URL for this fork.
 const UPDATE_URL = "https://api.github.com/repos/InsipidPoint/ghostty-windows/releases/latest";
 
@@ -1089,35 +1093,34 @@ fn updateCheckThread(app: *App) void {
         return;
     };
 
-    // Compare with current version. The GitHub tag is like "v1.3.2"
-    // and our version string is like "1.3.2-main+hash".
-    const current = build_config.version_string;
     const latest = result.tag;
     const latest_len = result.len;
-
     if (latest_len == 0) return;
 
     // Strip leading 'v' from tag if present
-    const latest_start: usize = if (latest_len > 0 and latest[0] == 'v') 1 else 0;
+    const latest_start: usize = if (latest[0] == 'v') 1 else 0;
     const latest_ver = latest[latest_start..latest_len];
 
-    // Compare: if the latest tag doesn't match our version prefix, notify.
-    // We check if current version starts with the latest tag. If it does,
-    // we're up to date (or on a dev build of that version).
-    if (!std.mem.startsWith(u8, current, latest_ver)) {
-        // Check if latest is actually newer (not older) by parsing semver.
-        // For simplicity, just notify if they differ — the user can decide.
-        log.info("update available: current={s} latest={s}", .{ current, latest_ver });
+    // Parse both versions as semver for proper comparison
+    const current_sv = std.SemanticVersion.parse(WIN_VERSION) catch {
+        log.warn("failed to parse current version: {s}", .{WIN_VERSION});
+        return;
+    };
+    const latest_sv = std.SemanticVersion.parse(latest_ver) catch {
+        log.debug("failed to parse remote version: {s}", .{latest_ver});
+        return;
+    };
 
-        // Post message to the main thread to show notification.
-        // Store the version string in a static buffer for the main thread.
+    // Only notify if the remote version is strictly newer
+    if (latest_sv.order(current_sv) == .gt) {
+        log.info("update available: current={s} latest={s}", .{ WIN_VERSION, latest_ver });
         @memcpy(update_version_buf[0..latest_len], latest[0..latest_len]);
         update_version_len = @intCast(latest_len);
         if (app.msg_hwnd) |hwnd| {
             _ = w32.PostMessageW(hwnd, WM_APP_UPDATE_AVAILABLE, 0, 0);
         }
     } else {
-        log.debug("up to date: {s}", .{current});
+        log.debug("up to date: current={s} latest={s}", .{ WIN_VERSION, latest_ver });
     }
 }
 
