@@ -125,6 +125,7 @@ final class TabTitleEditor: NSObject, NSTextFieldDelegate {
     ///
     /// If this returns true then the event was handled by the coordinator.
     func handleRightMouseDown(_ event: NSEvent) -> Bool {
+        guard event.type == .rightMouseDown else { return false }
         if isMouseEventWithinEditor(event) {
             inlineTitleEditor?.rightMouseDown(with: event)
             return true

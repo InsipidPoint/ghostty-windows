@@ -81,16 +81,27 @@ if(APPLE)
 elseif(WIN32)
     set(GHOSTTY_VT_LIBNAME "ghostty-vt.dll")
     set(GHOSTTY_VT_REALNAME "ghostty-vt.dll")
+    set(GHOSTTY_VT_IMPLIB "ghostty-vt.lib")
 else()
     set(GHOSTTY_VT_LIBNAME "${CMAKE_SHARED_LIBRARY_PREFIX}ghostty-vt${CMAKE_SHARED_LIBRARY_SUFFIX}")
     set(GHOSTTY_VT_SONAME "${CMAKE_SHARED_LIBRARY_PREFIX}ghostty-vt${CMAKE_SHARED_LIBRARY_SUFFIX}.0")
     set(GHOSTTY_VT_REALNAME "${CMAKE_SHARED_LIBRARY_PREFIX}ghostty-vt${CMAKE_SHARED_LIBRARY_SUFFIX}.0.1.0")
 endif()
 
-set(GHOSTTY_VT_SHARED_LIBRARY "${ZIG_OUT_DIR}/lib/${GHOSTTY_VT_REALNAME}")
+if(WIN32)
+    set(GHOSTTY_VT_SHARED_LIBRARY "${ZIG_OUT_DIR}/bin/${GHOSTTY_VT_REALNAME}")
+else()
+    set(GHOSTTY_VT_SHARED_LIBRARY "${ZIG_OUT_DIR}/lib/${GHOSTTY_VT_REALNAME}")
+endif()
 
 # Static library name.
-set(GHOSTTY_VT_STATIC_REALNAME "${CMAKE_STATIC_LIBRARY_PREFIX}ghostty-vt${CMAKE_STATIC_LIBRARY_SUFFIX}")
+# On Windows, the static lib is named "ghostty-vt-static.lib" to avoid
+# colliding with the DLL import library "ghostty-vt.lib".
+if(WIN32)
+    set(GHOSTTY_VT_STATIC_REALNAME "ghostty-vt-static.lib")
+else()
+    set(GHOSTTY_VT_STATIC_REALNAME "libghostty-vt.a")
+endif()
 set(GHOSTTY_VT_STATIC_LIBRARY "${ZIG_OUT_DIR}/lib/${GHOSTTY_VT_STATIC_REALNAME}")
 
 # Ensure the output directories exist so CMake doesn't reject the
@@ -99,7 +110,7 @@ file(MAKE_DIRECTORY "${ZIG_OUT_DIR}/include")
 
 # Custom command: run zig build -Demit-lib-vt (produces both shared and static)
 add_custom_command(
-    OUTPUT "${GHOSTTY_VT_SHARED_LIBRARY}" "${GHOSTTY_VT_STATIC_LIBRARY}"
+    OUTPUT "${GHOSTTY_VT_SHARED_LIBRARY}" "${GHOSTTY_VT_STATIC_LIBRARY}" "${ZIG_OUT_DIR}/lib/${GHOSTTY_VT_IMPLIB}"
     COMMAND "${ZIG_EXECUTABLE}" build -Demit-lib-vt ${GHOSTTY_ZIG_BUILD_FLAGS}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building libghostty-vt via zig build..."
@@ -108,6 +119,11 @@ add_custom_command(
 
 add_custom_target(zig_build_lib_vt ALL
     DEPENDS "${GHOSTTY_VT_SHARED_LIBRARY}" "${GHOSTTY_VT_STATIC_LIBRARY}"
+)
+
+# Tell CMake's clean target to also remove Zig's output directory.
+set_property(DIRECTORY APPEND PROPERTY
+    ADDITIONAL_CLEAN_FILES "${ZIG_OUT_DIR}"
 )
 
 # --- IMPORTED library targets ------------------------------------------------
@@ -122,7 +138,11 @@ if(APPLE)
     set_target_properties(ghostty-vt PROPERTIES
         IMPORTED_SONAME "@rpath/${GHOSTTY_VT_SONAME}"
     )
-elseif(NOT WIN32)
+elseif(WIN32)
+    set_target_properties(ghostty-vt PROPERTIES
+        IMPORTED_IMPLIB "${ZIG_OUT_DIR}/lib/${GHOSTTY_VT_IMPLIB}"
+    )
+else()
     set_target_properties(ghostty-vt PROPERTIES
         IMPORTED_SONAME "${GHOSTTY_VT_SONAME}"
     )
@@ -144,7 +164,16 @@ add_library(ghostty-vt-static STATIC IMPORTED GLOBAL)
 set_target_properties(ghostty-vt-static PROPERTIES
     IMPORTED_LOCATION "${GHOSTTY_VT_STATIC_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${ZIG_OUT_DIR}/include"
+    INTERFACE_COMPILE_DEFINITIONS "GHOSTTY_STATIC"
 )
+if(WIN32)
+    # On Windows, the Zig standard library uses NT API functions
+    # (NtClose, NtCreateSection, etc.) and kernel32 functions that
+    # consumers must link when using the static library.
+    set_target_properties(ghostty-vt-static PROPERTIES
+        INTERFACE_LINK_LIBRARIES "ntdll;kernel32"
+    )
+endif()
 add_dependencies(ghostty-vt-static zig_build_lib_vt)
 
 # --- Install ------------------------------------------------------------------
@@ -152,8 +181,12 @@ add_dependencies(ghostty-vt-static zig_build_lib_vt)
 include(GNUInstallDirs)
 
 # Install shared library
-install(FILES "${GHOSTTY_VT_SHARED_LIBRARY}" TYPE LIB)
-if(NOT WIN32)
+if(WIN32)
+    # On Windows, install the DLL and PDB to bin/ and the import library to lib/
+    install(FILES "${GHOSTTY_VT_SHARED_LIBRARY}" "${ZIG_OUT_DIR}/bin/ghostty-vt.pdb" TYPE BIN)
+    install(FILES "${ZIG_OUT_DIR}/lib/${GHOSTTY_VT_IMPLIB}" TYPE LIB)
+else()
+    install(FILES "${GHOSTTY_VT_SHARED_LIBRARY}" TYPE LIB)
     # Install symlinks
     install(CODE "
         execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink

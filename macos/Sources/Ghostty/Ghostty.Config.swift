@@ -45,6 +45,10 @@ extension Ghostty {
             self.init(config: ghostty_config_clone(config))
         }
 
+        func clone(config: ghostty_config_t) {
+            self.config = config
+        }
+
         deinit {
             self.config = nil
         }

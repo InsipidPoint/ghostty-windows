@@ -41,6 +41,7 @@ const Tab = @import("tab.zig").Tab;
 const CloseConfirmationDialog = @import("close_confirmation_dialog.zig").CloseConfirmationDialog;
 const ConfigErrorsDialog = @import("config_errors_dialog.zig").ConfigErrorsDialog;
 const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
+const OpenURI = @import("../portal.zig").OpenURI;
 
 const log = std.log.scoped(.gtk_ghostty_application);
 
@@ -214,6 +215,8 @@ pub const Application = extern struct {
         /// by the system. If this is null, the LANG environment variable did
         /// not exist in Ghostty's environment variable.
         saved_language: ?[:0]const u8 = null,
+
+        open_uri: OpenURI = undefined,
 
         pub var offset: c_int = 0;
     };
@@ -398,6 +401,7 @@ pub const Application = extern struct {
             .custom_css_providers = .empty,
             .global_shortcuts = gobject.ext.newInstance(GlobalShortcuts, .{}),
             .saved_language = saved_language,
+            .open_uri = .init(rt_app),
         };
 
         // Signals
@@ -433,6 +437,7 @@ pub const Application = extern struct {
         const priv: *Private = self.private();
         priv.config.unref();
         priv.winproto.deinit();
+        priv.open_uri.deinit();
         priv.global_shortcuts.unref();
         if (priv.saved_language) |language| alloc.free(language);
         if (gdk.Display.getDefault()) |display| {
@@ -804,6 +809,11 @@ pub const Application = extern struct {
     /// Returns the app winproto implementation.
     pub fn winproto(self: *Self) *winprotopkg.App {
         return &self.private().winproto;
+    }
+
+    /// Returns the open URI portal implementation.
+    pub fn openUri(self: *Self) *OpenURI {
+        return &self.private().open_uri;
     }
 
     /// This will get called when there are no more open surfaces.
@@ -1288,6 +1298,11 @@ pub const Application = extern struct {
 
         // Set ourselves as the default application.
         gio.Application.setDefault(self.as(gio.Application));
+
+        // The D-Bus connection is only valid after GApplication startup.
+        self.openUri().setDbusConnection(
+            self.as(gio.Application).getDbusConnection(),
+        );
 
         // Setup our event loop
         self.startupXev();
@@ -1873,6 +1888,17 @@ pub const Application = extern struct {
             gobject.Object.virtual_methods.finalize.implement(class, &finalize);
         }
     };
+
+    pub fn openUrlFallback(self: *Application, kind: apprt.action.OpenUrl.Kind, url: []const u8) void {
+        // Fallback to the minimal cross-platform way of opening a URL.
+        // This is always a safe fallback and enables for example Windows
+        // to open URLs (GTK on Windows via WSL is a thing).
+        internal_os.open(
+            self.allocator(),
+            kind,
+            url,
+        ) catch |err| log.warn("unable to open url: {}", .{err});
+    }
 };
 
 /// All apprt action handlers
@@ -2317,16 +2343,20 @@ const Action = struct {
         self: *Application,
         value: apprt.action.OpenUrl,
     ) void {
-        // TODO: use https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.OpenURI.html
+        if (std.mem.startsWith(u8, value.url, "/")) {
+            self.openUrlFallback(value.kind, value.url);
+            return;
+        }
+        if (std.mem.startsWith(u8, value.url, "file://")) {
+            self.openUrlFallback(value.kind, value.url);
+            return;
+        }
 
-        // Fallback to the minimal cross-platform way of opening a URL.
-        // This is always a safe fallback and enables for example Windows
-        // to open URLs (GTK on Windows via WSL is a thing).
-        internal_os.open(
-            self.allocator(),
-            value.kind,
-            value.url,
-        ) catch |err| log.warn("unable to open url: {}", .{err});
+        self.openUri().start(value) catch |err| {
+            log.err("unable to open uri err={}", .{err});
+            self.openUrlFallback(value.kind, value.url);
+            return;
+        };
     }
 
     pub fn pwd(

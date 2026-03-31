@@ -67,42 +67,6 @@ class TitlebarTabsTahoeTerminalWindow: TransparentTitlebarTerminalWindow, NSTool
 
         viewModel.isMainWindow = false
     }
-
-    /// On our Tahoe titlebar tabs, we need to fix up right click events because they don't work
-    /// naturally due to whatever mess we made.
-    override func sendEvent(_ event: NSEvent) {
-        guard viewModel.hasTabBar else {
-            super.sendEvent(event)
-            return
-        }
-
-        let isRightClick =
-            event.type == .rightMouseDown ||
-            (event.type == .otherMouseDown && event.buttonNumber == 2) ||
-            (event.type == .leftMouseDown && event.modifierFlags.contains(.control))
-        guard isRightClick else {
-            super.sendEvent(event)
-            return
-        }
-
-        guard let tabBarView else {
-            super.sendEvent(event)
-            return
-        }
-
-        guard !tabTitleEditor.handleRightMouseDown(event) else {
-            return
-        }
-
-        let locationInTabBar = tabBarView.convert(event.locationInWindow, from: nil)
-        guard tabBarView.bounds.contains(locationInTabBar) else {
-            super.sendEvent(event)
-            return
-        }
-
-        tabBarView.rightMouseDown(with: event)
-    }
-
     // This is called by macOS for native tabbing in order to add the tab bar. We hook into
     // this, detect the tab bar being added, and override its behavior.
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {

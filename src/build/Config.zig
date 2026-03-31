@@ -83,6 +83,19 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
             result = genericMacOSTarget(b, result.query.cpu_arch);
         }
 
+        // On Windows, default to the MSVC ABI so that produced COFF
+        // objects (including compiler_rt) are compatible with the MSVC
+        // linker. Zig defaults to the GNU ABI which produces objects
+        // with invalid COMDAT sections that MSVC rejects (LNK1143).
+        // Only override when no explicit ABI was requested.
+        if (result.result.os.tag == .windows and
+            result.query.abi == null)
+        {
+            var query = result.query;
+            query.abi = .msvc;
+            result = b.resolveTargetQuery(query);
+        }
+
         // If we have no minimum OS version, we set the default based on
         // our tag. Not all tags have a minimum so this may be null.
         if (result.query.os_version_min == null) {
@@ -532,6 +545,7 @@ pub fn terminalOptions(self: *const Config) TerminalBuildOptions {
         .simd = self.simd,
         .oniguruma = true,
         .c_abi = false,
+        .version = self.version,
         .slow_runtime_safety = switch (self.optimize) {
             .Debug => true,
             .ReleaseSafe,

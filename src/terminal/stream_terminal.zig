@@ -1,35 +1,95 @@
 const std = @import("std");
 const testing = std.testing;
+const csi = @import("csi.zig");
+const device_attributes = @import("device_attributes.zig");
+const device_status = @import("device_status.zig");
 const stream = @import("stream.zig");
 const Action = stream.Action;
 const Screen = @import("Screen.zig");
 const modes = @import("modes.zig");
 const osc_color = @import("osc/parsers/color.zig");
 const kitty_color = @import("kitty/color.zig");
+const size_report = @import("size_report.zig");
 const Terminal = @import("Terminal.zig");
 
-const log = std.log.scoped(.stream_readonly);
+const log = std.log.scoped(.stream_terminal);
 
 /// This is a Stream implementation that processes actions against
-/// a Terminal and updates the Terminal state. It is called "readonly" because
-/// it only processes actions that modify terminal state, while ignoring
-/// any actions that require a response (like queries).
-///
-/// If you're implementing a terminal emulator that only needs to render
-/// output and doesn't need to respond (since it maybe isn't running the
-/// actual program), this is the stream type to use. For example, this is
-/// ideal for replay tooling, CI logs, PaaS builder output, etc.
+/// a Terminal and updates the Terminal state.
 pub const Stream = stream.Stream(Handler);
 
-/// See Stream, which is just the stream wrapper around this.
+/// A stream handler that updates terminal state. By default, it is
+/// readonly in the sense that it only updates terminal state and ignores
+/// all other sequences that require a response or otherwise have side
+/// effects (e.g. clipboards).
 ///
-/// This isn't attached directly to Terminal because there is additional
-/// state and options we plan to add in the future, such as APC/DCS which
-/// don't make sense to me to add to the Terminal directly. Instead, you
-/// can call `vtHandler` on Terminal to initialize this handler.
+/// You can manually set various effects callbacks in the `effects` field
+/// to implement certain effects such as bells, titles, clipboard, etc.
 pub const Handler = struct {
     /// The terminal state to modify.
     terminal: *Terminal,
+
+    /// Callbacks for certain effects that handlers may have. These
+    /// may or may not fully replace internal handling of certain effects,
+    /// but they allow for the handler to trigger or query external
+    /// effects.
+    effects: Effects = .readonly,
+
+    pub const Effects = struct {
+        /// Called when the terminal needs to write data back to the pty,
+        /// e.g. in response to a DECRQM query. The data is only valid
+        /// during the lifetime of the call so callers must copy it
+        /// if it needs to be stored or used after the call returns.
+        write_pty: ?*const fn (*Handler, [:0]const u8) void,
+
+        /// Called when the bell is rung (BEL).
+        bell: ?*const fn (*Handler) void,
+
+        /// Called in response to a color scheme DSR query (CSI ? 996 n).
+        /// Returns the current color scheme. Return null to silently
+        /// ignore the query.
+        color_scheme: ?*const fn (*Handler) ?device_status.ColorScheme,
+
+        /// Called in response to a device attributes query (CSI c,
+        /// CSI > c, CSI = c). Returns the response to encode and
+        /// write back to the pty.
+        device_attributes: ?*const fn (*Handler) device_attributes.Attributes,
+
+        /// Called in response to ENQ (0x05). Returns the raw response
+        /// bytes to write back to the pty. The returned memory must be
+        /// valid for the lifetime of the call.
+        enquiry: ?*const fn (*Handler) []const u8,
+
+        /// Called in response to XTWINOPS size queries (CSI 14/16/18 t).
+        /// Returns the current terminal geometry used for encoding.
+        /// Return null to silently ignore the query.
+        size: ?*const fn (*Handler) ?size_report.Size,
+
+        /// Called when the terminal title changes via escape sequences
+        /// (e.g. OSC 0/2). The new title can be queried via
+        /// handler.terminal.getTitle().
+        title_changed: ?*const fn (*Handler) void,
+
+        /// Called in response to an XTVERSION query. Returns the version
+        /// string to report (e.g. "ghostty 1.2.3"). The returned memory
+        /// must be valid for the lifetime of the call. The maximum length
+        /// is 256 bytes; longer strings will be silently ignored.
+        xtversion: ?*const fn (*Handler) []const u8,
+
+        /// No effects means that the stream effectively becomes readonly
+        /// that only affects pure terminal state and ignores all side
+        /// effects beyond that.
+        pub const readonly: Effects = .{
+            .bell = null,
+            .color_scheme = null,
+            .device_attributes = null,
+            .enquiry = null,
+            .size = null,
+            .title_changed = null,
+            .write_pty = null,
+            .xtversion = null,
+        };
+    };
 
     pub fn init(terminal: *Terminal) Handler {
         return .{
@@ -170,6 +230,18 @@ pub const Handler = struct {
             .color_operation => try self.colorOperation(value.op, &value.requests),
             .kitty_color_report => try self.kittyColorOperation(value),
 
+            // Effect-based handlers
+            .bell => self.bell(),
+            .device_attributes => self.reportDeviceAttributes(value),
+            .device_status => self.deviceStatus(value.request),
+            .enquiry => self.reportEnquiry(),
+            .kitty_keyboard_query => self.queryKittyKeyboard(),
+            .request_mode => self.requestMode(value.mode),
+            .request_mode_unknown => self.requestModeUnknown(value.mode, value.ansi),
+            .size_report => self.reportSize(value),
+            .window_title => self.windowTitle(value.title),
+            .xtversion => self.reportXtversion(),
+
             // No supported DCS commands have any terminal-modifying effects,
             // but they may in the future. For now we just ignore it.
             .dcs_hook,
@@ -185,16 +257,6 @@ pub const Handler = struct {
             => {},
 
             // Have no terminal-modifying effect
-            .bell,
-            .enquiry,
-            .request_mode,
-            .request_mode_unknown,
-            .size_report,
-            .xtversion,
-            .device_attributes,
-            .device_status,
-            .kitty_keyboard_query,
-            .window_title,
             .report_pwd,
             .show_desktop_notification,
             .progress_report,
@@ -203,6 +265,189 @@ pub const Handler = struct {
             .title_pop,
             => {},
         }
+    }
+
+    inline fn writePty(self: *Handler, data: [:0]const u8) void {
+        const func = self.effects.write_pty orelse return;
+        func(self, data);
+    }
+
+    fn bell(self: *Handler) void {
+        const func = self.effects.bell orelse return;
+        func(self);
+    }
+
+    fn reportDeviceAttributes(self: *Handler, req: device_attributes.Req) void {
+        const func = self.effects.device_attributes orelse return;
+        const attrs = func(self);
+
+        var stack = std.heap.stackFallback(128, self.terminal.gpa());
+        const alloc = stack.get();
+
+        var aw: std.Io.Writer.Allocating = .init(alloc);
+        defer aw.deinit();
+
+        attrs.encode(req, &aw.writer) catch return;
+
+        const written = aw.toOwnedSliceSentinel(0) catch return;
+        defer alloc.free(written);
+        self.writePty(written);
+    }
+
+    fn deviceStatus(self: *Handler, req: device_status.Request) void {
+        switch (req) {
+            .operating_status => self.writePty("\x1B[0n"),
+
+            .cursor_position => {
+                const pos: struct {
+                    x: usize,
+                    y: usize,
+                } = if (self.terminal.modes.get(.origin)) .{
+                    .x = self.terminal.screens.active.cursor.x -| self.terminal.scrolling_region.left,
+                    .y = self.terminal.screens.active.cursor.y -| self.terminal.scrolling_region.top,
+                } else .{
+                    .x = self.terminal.screens.active.cursor.x,
+                    .y = self.terminal.screens.active.cursor.y,
+                };
+
+                var buf: [64]u8 = undefined;
+                const resp = std.fmt.bufPrintZ(&buf, "\x1B[{};{}R", .{
+                    pos.y + 1,
+                    pos.x + 1,
+                }) catch return;
+                self.writePty(resp);
+            },
+
+            .color_scheme => {
+                const func = self.effects.color_scheme orelse return;
+                const scheme = func(self) orelse return;
+                self.writePty(switch (scheme) {
+                    .dark => "\x1B[?997;1n",
+                    .light => "\x1B[?997;2n",
+                });
+            },
+        }
+    }
+
+    fn reportEnquiry(self: *Handler) void {
+        const func = self.effects.enquiry orelse return;
+        const response = func(self);
+        if (response.len == 0) return;
+        var buf: [256]u8 = undefined;
+        if (response.len >= buf.len) return;
+        @memcpy(buf[0..response.len], response);
+        buf[response.len] = 0;
+        self.writePty(buf[0..response.len :0]);
+    }
+
+    fn reportXtversion(self: *Handler) void {
+        const version = if (self.effects.xtversion) |func| func(self) else "";
+        var buf: [288]u8 = undefined;
+        const resp = std.fmt.bufPrintZ(
+            &buf,
+            "\x1BP>|{s}\x1B\\",
+            .{if (version.len > 0) version else "libghostty"},
+        ) catch return;
+        self.writePty(resp);
+    }
+
+    fn reportSize(self: *Handler, style: csi.SizeReportStyle) void {
+        // Almost all size reports will fit in 256 bytes so try that
+        // on the stack before falling back to a heap allocation.
+        var stack = std.heap.stackFallback(
+            256,
+            self.terminal.gpa(),
+        );
+        const alloc = stack.get();
+
+        // Allocating writing to accumulate the response.
+        var aw: std.Io.Writer.Allocating = .init(alloc);
+        defer aw.deinit();
+
+        // Build the response.
+        switch (style) {
+            .csi_21_t => {
+                const title = self.terminal.getTitle() orelse "";
+                aw.writer.print("\x1b]l{s}\x1b\\", .{title}) catch return;
+            },
+
+            .csi_14_t, .csi_16_t, .csi_18_t => {
+                const get_size = self.effects.size orelse return;
+                const s = get_size(self) orelse return;
+                const report_style: size_report.Style = switch (style) {
+                    .csi_14_t => .csi_14_t,
+                    .csi_16_t => .csi_16_t,
+                    .csi_18_t => .csi_18_t,
+                    .csi_21_t => unreachable,
+                };
+                size_report.encode(
+                    &aw.writer,
+                    report_style,
+                    s,
+                ) catch |err| {
+                    log.warn("error encoding size report err={}", .{err});
+                    return;
+                };
+            },
+        }
+
+        const resp = aw.toOwnedSliceSentinel(0) catch return;
+        defer alloc.free(resp);
+        self.writePty(resp);
+    }
+
+    fn windowTitle(self: *Handler, title_raw: []const u8) void {
+        // Prevent DoS attacks by limiting title length.
+        const max_title_len = 1024;
+        const title = if (title_raw.len > max_title_len) title: {
+            log.warn("title length {d} exceeds max length {d}, truncating", .{
+                title_raw.len,
+                max_title_len,
+            });
+            break :title title_raw[0..max_title_len];
+        } else title_raw;
+
+        self.terminal.setTitle(title) catch |err| {
+            log.warn("error setting title err={}", .{err});
+            return;
+        };
+
+        const func = self.effects.title_changed orelse return;
+        func(self);
+    }
+
+    fn requestMode(self: *Handler, mode: modes.Mode) void {
+        const report = self.terminal.modes.getReport(.fromMode(mode));
+        self.sendModeReport(report);
+    }
+
+    fn requestModeUnknown(self: *Handler, mode_raw: u16, ansi: bool) void {
+        const report = self.terminal.modes.getReport(.{
+            .value = @truncate(mode_raw),
+            .ansi = ansi,
+        });
+        self.sendModeReport(report);
+    }
+
+    fn sendModeReport(self: *Handler, report: modes.Report) void {
+        var buf: [modes.Report.max_size + 1]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        report.encode(&writer) catch |err| {
+            log.warn("error encoding mode report err={}", .{err});
+            return;
+        };
+        const len = writer.buffered().len;
+        buf[len] = 0;
+        self.writePty(buf[0..len :0]);
+    }
+
+    fn queryKittyKeyboard(self: *Handler) void {
+        // Max response is "\x1b[?31u\x00" (7 bytes): the flags are a u5 (max 31).
+        var buf: [32]u8 = undefined;
+        const resp = std.fmt.bufPrintZ(&buf, "\x1b[?{}u", .{
+            self.terminal.screens.active.kitty_keyboard.current().int(),
+        }) catch return;
+        self.writePty(resp);
     }
 
     inline fn horizontalTab(self: *Handler, count: u16) void {
@@ -1001,6 +1246,98 @@ test "semantic prompt end_prompt_start_input_terminate_eol clears on linefeed" {
     try testing.expectEqual(.output, t.screens.active.cursor.semantic_content);
 }
 
+test "bell effect callback" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    // Test bell with null callback (default readonly effects) doesn't crash
+    {
+        var s: Stream = .initAlloc(testing.allocator, .init(&t));
+        defer s.deinit();
+
+        s.nextSlice("\x07");
+
+        // Terminal should still be functional after bell
+        s.nextSlice("AfterBell");
+        const str = try t.plainString(testing.allocator);
+        defer testing.allocator.free(str);
+        try testing.expectEqualStrings("AfterBell", str);
+    }
+
+    t.fullReset();
+
+    // Test bell with a callback
+    {
+        const S = struct {
+            var bell_count: usize = 0;
+            fn bell(_: *Handler) void {
+                bell_count += 1;
+            }
+        };
+        S.bell_count = 0;
+
+        var handler: Handler = .init(&t);
+        handler.effects.bell = &S.bell;
+
+        var s: Stream = .initAlloc(testing.allocator, handler);
+        defer s.deinit();
+
+        s.nextSlice("\x07");
+        try testing.expectEqual(@as(usize, 1), S.bell_count);
+
+        s.nextSlice("\x07\x07");
+        try testing.expectEqual(@as(usize, 3), S.bell_count);
+    }
+}
+
+test "request mode DECRQM with write_pty callback" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    // Without callback, DECRQM should not crash
+    {
+        var s: Stream = .initAlloc(testing.allocator, .init(&t));
+        defer s.deinit();
+
+        // DECRQM for mode 7 (wraparound) — should be silently ignored
+        s.nextSlice("\x1B[?7$p");
+    }
+
+    t.fullReset();
+
+    // With callback, DECRQM should produce a response
+    {
+        const S = struct {
+            var last_response: ?[:0]const u8 = null;
+            fn writePty(_: *Handler, data: [:0]const u8) void {
+                if (last_response) |old| testing.allocator.free(old);
+                last_response = testing.allocator.dupeZ(u8, data) catch @panic("OOM");
+            }
+        };
+        S.last_response = null;
+        defer if (S.last_response) |old| testing.allocator.free(old);
+
+        var handler: Handler = .init(&t);
+        handler.effects.write_pty = &S.writePty;
+
+        var s: Stream = .initAlloc(testing.allocator, handler);
+        defer s.deinit();
+
+        // Wraparound mode (7) is set by default
+        s.nextSlice("\x1B[?7$p");
+        try testing.expectEqualStrings("\x1B[?7;1$y", S.last_response.?);
+
+        // Disable wraparound and query again
+        s.nextSlice("\x1B[?7l");
+        s.nextSlice("\x1B[?7$p");
+        try testing.expectEqualStrings("\x1B[?7;2$y", S.last_response.?);
+
+        // Query an unknown mode
+        s.nextSlice("\x1B[?9999$p");
+        try testing.expectEqualStrings("\x1B[?9999;0$y", S.last_response.?);
+    }
+}
+
 test "stream: CSI W with intermediate but no params" {
     // Regression test from AFL++ crash. CSI ? W without
     // parameters caused an out-of-bounds access on input.params[0].
@@ -1015,4 +1352,720 @@ test "stream: CSI W with intermediate but no params" {
     defer s.deinit();
 
     s.nextSlice("\x1b[?W");
+}
+
+test "window_title effect is called" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var title_changed_count: usize = 0;
+        fn titleChanged(_: *Handler) void {
+            title_changed_count += 1;
+        }
+    };
+    S.title_changed_count = 0;
+
+    var handler: Handler = .init(&t);
+    handler.effects.title_changed = &S.titleChanged;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Set window title via OSC 2
+    s.nextSlice("\x1b]2;Hello World\x1b\\");
+    try testing.expectEqualStrings("Hello World", t.getTitle().?);
+    try testing.expectEqual(@as(usize, 1), S.title_changed_count);
+}
+
+test "window_title effect not called without callback" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    // Should not crash when no callback is set
+    s.nextSlice("\x1b]2;Hello World\x1b\\");
+
+    // Title should still be set on terminal state
+    try testing.expectEqualStrings("Hello World", t.getTitle().?);
+
+    // Terminal should still be functional
+    s.nextSlice("Test");
+    const str = try t.plainString(testing.allocator);
+    defer testing.allocator.free(str);
+    try testing.expectEqualStrings("Test", str);
+}
+
+test "window_title effect with empty title" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var title_changed_count: usize = 0;
+        fn titleChanged(_: *Handler) void {
+            title_changed_count += 1;
+        }
+    };
+    S.title_changed_count = 0;
+
+    var handler: Handler = .init(&t);
+    handler.effects.title_changed = &S.titleChanged;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Set empty window title
+    s.nextSlice("\x1b]2;\x1b\\");
+    try testing.expect(t.getTitle() == null);
+    try testing.expectEqual(@as(usize, 1), S.title_changed_count);
+}
+
+test "kitty_keyboard_query" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[:0]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = data;
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Default kitty keyboard flags should be 0
+    s.nextSlice("\x1b[?u");
+    try testing.expectEqualStrings("\x1b[?0u", S.written.?);
+
+    // Push kitty keyboard mode with flags and query again
+    S.written = null;
+    s.nextSlice("\x1b[>1u"); // push with disambiguate flag
+    s.nextSlice("\x1b[?u");
+    try testing.expectEqualStrings("\x1b[?1u", S.written.?);
+}
+
+test "xtversion default" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[:0]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = data;
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Without xtversion effect set, should report "libghostty"
+    s.nextSlice("\x1b[>0q");
+    try testing.expectEqualStrings("\x1bP>|libghostty\x1b\\", S.written.?);
+}
+
+test "xtversion with effect" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[:0]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = data;
+        }
+        fn xtversion(_: *Handler) []const u8 {
+            return "ghostty 1.2.3";
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.xtversion = &S.xtversion;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x1b[>0q");
+    try testing.expectEqualStrings("\x1bP>|ghostty 1.2.3\x1b\\", S.written.?);
+}
+
+test "xtversion with empty string effect" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[:0]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = data;
+        }
+        fn xtversion(_: *Handler) []const u8 {
+            return "";
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.xtversion = &S.xtversion;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Empty string from effect should fall back to "libghostty"
+    s.nextSlice("\x1b[>0q");
+    try testing.expectEqualStrings("\x1bP>|libghostty\x1b\\", S.written.?);
+}
+
+test "size report csi_14_t with effect" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn getSize(_: *Handler) ?size_report.Size {
+            return .{ .rows = 24, .columns = 80, .cell_width = 9, .cell_height = 18 };
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.size = &S.getSize;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // CSI 14 t - report text area size in pixels
+    s.nextSlice("\x1b[14t");
+    defer testing.allocator.free(S.written.?);
+    try testing.expectEqualStrings("\x1b[4;432;720t", S.written.?);
+}
+
+test "size report csi_16_t with effect" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn getSize(_: *Handler) ?size_report.Size {
+            return .{ .rows = 24, .columns = 80, .cell_width = 9, .cell_height = 18 };
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.size = &S.getSize;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // CSI 16 t - report cell size in pixels
+    s.nextSlice("\x1b[16t");
+    defer testing.allocator.free(S.written.?);
+    try testing.expectEqualStrings("\x1b[6;18;9t", S.written.?);
+}
+
+test "size report csi_18_t with effect" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn getSize(_: *Handler) ?size_report.Size {
+            return .{ .rows = 24, .columns = 80, .cell_width = 9, .cell_height = 18 };
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.size = &S.getSize;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // CSI 18 t - report text area size in characters
+    s.nextSlice("\x1b[18t");
+    defer testing.allocator.free(S.written.?);
+    try testing.expectEqualStrings("\x1b[8;24;80t", S.written.?);
+}
+
+test "size report no effect callback" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Without size effect, size reports should be silently ignored
+    s.nextSlice("\x1b[14t");
+    try testing.expect(S.written == null);
+}
+
+test "size report csi_21_t title" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Set a title first
+    s.nextSlice("\x1b]2;My Title\x1b\\");
+
+    // CSI 21 t - report title (no size effect needed)
+    s.nextSlice("\x1b[21t");
+    defer testing.allocator.free(S.written.?);
+    try testing.expectEqualStrings("\x1b]lMy Title\x1b\\", S.written.?);
+}
+
+test "enquiry no effect" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // ENQ without enquiry effect should not write anything
+    s.nextSlice("\x05");
+    try testing.expect(S.written == null);
+}
+
+test "enquiry with effect" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn enquiry(_: *Handler) []const u8 {
+            return "ghostty";
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.enquiry = &S.enquiry;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x05");
+    defer testing.allocator.free(S.written.?);
+    try testing.expectEqualStrings("ghostty", S.written.?);
+}
+
+test "enquiry with empty response" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn enquiry(_: *Handler) []const u8 {
+            return "";
+        }
+    };
+    S.written = null;
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.enquiry = &S.enquiry;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Empty enquiry response should not write anything
+    s.nextSlice("\x05");
+    try testing.expect(S.written == null);
+}
+
+test "device status: operating status" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // CSI 5 n — operating status report
+    s.nextSlice("\x1B[5n");
+    try testing.expectEqualStrings("\x1B[0n", S.written.?);
+}
+
+test "device status: cursor position" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Default position is 0,0 — reported as 1,1
+    s.nextSlice("\x1B[6n");
+    try testing.expectEqualStrings("\x1B[1;1R", S.written.?);
+
+    // Move cursor to row 5, col 10
+    s.nextSlice("\x1B[5;10H");
+    s.nextSlice("\x1B[6n");
+    try testing.expectEqualStrings("\x1B[5;10R", S.written.?);
+}
+
+test "device status: cursor position with origin mode" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Set scroll region rows 5-20
+    s.nextSlice("\x1B[5;20r");
+    // Enable origin mode
+    s.nextSlice("\x1B[?6h");
+    // Move to row 3, col 5 within the region
+    s.nextSlice("\x1B[3;5H");
+    // Query cursor position
+    s.nextSlice("\x1B[6n");
+    // Should report position relative to the scroll region
+    try testing.expectEqualStrings("\x1B[3;5R", S.written.?);
+}
+
+test "device status: color scheme dark" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn colorScheme(_: *Handler) ?device_status.ColorScheme {
+            return .dark;
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.color_scheme = &S.colorScheme;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // CSI ? 996 n — color scheme query
+    s.nextSlice("\x1B[?996n");
+    try testing.expectEqualStrings("\x1B[?997;1n", S.written.?);
+}
+
+test "device status: color scheme light" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn colorScheme(_: *Handler) ?device_status.ColorScheme {
+            return .light;
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.color_scheme = &S.colorScheme;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // CSI ? 996 n — color scheme query
+    s.nextSlice("\x1B[?996n");
+    try testing.expectEqualStrings("\x1B[?997;2n", S.written.?);
+}
+
+test "device status: color scheme without callback" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Without color_scheme effect, query should be silently ignored
+    s.nextSlice("\x1B[?996n");
+    try testing.expect(S.written == null);
+}
+
+test "device status: readonly ignores all" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    // All device status queries should be silently ignored without effects
+    s.nextSlice("\x1B[5n");
+    s.nextSlice("\x1B[6n");
+    s.nextSlice("\x1B[?996n");
+
+    // Terminal should still be functional
+    s.nextSlice("Test");
+    const str = try t.plainString(testing.allocator);
+    defer testing.allocator.free(str);
+    try testing.expectEqualStrings("Test", str);
+}
+
+test "device attributes: primary DA" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn da(_: *Handler) device_attributes.Attributes {
+            return .{};
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.device_attributes = &S.da;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x1B[c");
+    try testing.expectEqualStrings("\x1b[?62;22c", S.written.?);
+}
+
+test "device attributes: secondary DA" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn da(_: *Handler) device_attributes.Attributes {
+            return .{};
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.device_attributes = &S.da;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x1B[>c");
+    try testing.expectEqualStrings("\x1b[>1;0;0c", S.written.?);
+}
+
+test "device attributes: tertiary DA" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn da(_: *Handler) device_attributes.Attributes {
+            return .{};
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.device_attributes = &S.da;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x1B[=c");
+    try testing.expectEqualStrings("\x1bP!|00000000\x1b\\", S.written.?);
+}
+
+test "device attributes: readonly ignores" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    // All DA queries should be silently ignored without effects
+    s.nextSlice("\x1B[c");
+    s.nextSlice("\x1B[>c");
+    s.nextSlice("\x1B[=c");
+
+    // Terminal should still be functional
+    s.nextSlice("Test");
+    const str = try t.plainString(testing.allocator);
+    defer testing.allocator.free(str);
+    try testing.expectEqualStrings("Test", str);
+}
+
+test "device attributes: custom response" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+        fn da(_: *Handler) device_attributes.Attributes {
+            return .{
+                .primary = .{
+                    .conformance_level = .vt420,
+                    .features = &.{ .ansi_color, .clipboard },
+                },
+                .secondary = .{
+                    .device_type = .vt420,
+                    .firmware_version = 100,
+                },
+            };
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+    handler.effects.device_attributes = &S.da;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    s.nextSlice("\x1B[c");
+    try testing.expectEqualStrings("\x1b[?64;22;52c", S.written.?);
+
+    s.nextSlice("\x1B[>c");
+    try testing.expectEqualStrings("\x1b[>41;100;0c", S.written.?);
 }

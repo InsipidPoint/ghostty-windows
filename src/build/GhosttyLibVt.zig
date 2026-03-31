@@ -9,8 +9,8 @@ const GhosttyZig = @import("GhosttyZig.zig");
 /// The step that generates the file.
 step: *std.Build.Step,
 
-/// The artifact result
-artifact: *std.Build.Step.InstallArtifact,
+/// The install step for the library output.
+artifact: *std.Build.Step,
 
 /// The kind of library
 kind: Kind,
@@ -44,14 +44,40 @@ pub fn initWasm(
     // Allow exported symbols to actually be exported.
     exe.rdynamic = true;
 
+    // Export the indirect function table so that embedders (e.g. JS in
+    // a browser) can insert callback entries for terminal effects.
+    exe.export_table = true;
+
     // There is no entrypoint for this wasm module.
     exe.entry = .disabled;
 
+    // Zig's WASM linker doesn't support --growable-table, so the table
+    // is emitted with max == min and can't be grown from JS. Run a
+    // small Zig build tool that patches the binary's table section to
+    // remove the max limit.
+    const patch_run = patch: {
+        const patcher = b.addExecutable(.{
+            .name = "wasm_patch_growable_table",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/build/wasm_patch_growable_table.zig"),
+                .target = b.graph.host,
+            }),
+        });
+        break :patch b.addRunArtifact(patcher);
+    };
+    patch_run.addFileArg(exe.getEmittedBin());
+    const output = patch_run.addOutputFileArg("ghostty-vt.wasm");
+    const artifact_install = b.addInstallFileWithDir(
+        output,
+        .bin,
+        "ghostty-vt.wasm",
+    );
+
     return .{
-        .step = &exe.step,
-        .artifact = b.addInstallArtifact(exe, .{}),
+        .step = &patch_run.step,
+        .artifact = &artifact_install.step,
         .kind = .wasm,
-        .output = exe.getEmittedBin(),
+        .output = output,
         .dsym = null,
         .pkg_config = null,
     };
@@ -106,6 +132,12 @@ fn initLib(
         lib.root_module.pic = true;
     }
 
+    if (target.result.os.tag == .windows) {
+        // Zig's ubsan emits /exclude-symbols linker directives that
+        // are incompatible with the MSVC linker (LNK4229).
+        lib.bundle_ubsan_rt = false;
+    }
+
     if (lib.rootModuleTarget().abi.isAndroid()) {
         // Support 16kb page sizes, required for Android 15+.
         lib.link_z_max_page_size = 16384; // 16kb
@@ -158,7 +190,7 @@ fn initLib(
 
     return .{
         .step = &lib.step,
-        .artifact = b.addInstallArtifact(lib, .{}),
+        .artifact = &b.addInstallArtifact(lib, .{}).step,
         .kind = kind,
         .output = lib.getEmittedBin(),
         .dsym = dsymutil,
@@ -171,7 +203,7 @@ pub fn install(
     step: *std.Build.Step,
 ) void {
     const b = step.owner;
-    step.dependOn(&self.artifact.step);
+    step.dependOn(self.artifact);
     if (self.pkg_config) |pkg_config| {
         step.dependOn(&b.addInstallFileWithDir(
             pkg_config,
