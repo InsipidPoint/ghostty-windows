@@ -17,6 +17,9 @@ const Window = @import("Window.zig");
 const SplitTree = @import("../../datastruct/split_tree.zig").SplitTree;
 const w32 = @import("win32.zig");
 
+const build_config = @import("../../build_config.zig");
+const input = @import("../../input.zig");
+
 const log = std.log.scoped(.win32);
 
 /// OpenGL draws happen on the renderer thread, not the app thread.
@@ -207,6 +210,9 @@ pub fn init(
 
     // Register global hotkey for quick terminal (if configured).
     self.registerGlobalHotkey();
+
+    // Check for updates in the background (non-blocking).
+    self.startUpdateCheck();
 }
 
 pub fn run(self: *App) !void {
@@ -854,7 +860,6 @@ pub fn performAction(
         .secure_input, // macOS EnableSecureEventInput
         .undo, // macOS NSUndoManager
         .redo, // macOS NSUndoManager
-        .check_for_updates, // macOS Sparkle framework
         .show_gtk_inspector, // GTK-only
         .show_on_screen_keyboard, // GTK/mobile
         .inspector, // Not yet implemented (debug overlay)
@@ -931,6 +936,11 @@ pub fn performAction(
                     );
                 },
             }
+            return true;
+        },
+
+        .check_for_updates => {
+            self.startUpdateCheck();
             return true;
         },
 
@@ -1052,6 +1062,149 @@ fn keyToVk(key: @import("../../input/key.zig").Key) ?u32 {
         .f10 => w32.VK_F10, .f11 => w32.VK_F11, .f12 => w32.VK_F12,
         else => null,
     };
+}
+
+// -----------------------------------------------------------------------
+// Update Checker
+// -----------------------------------------------------------------------
+
+/// GitHub releases API URL for this fork.
+const UPDATE_URL = "https://api.github.com/repos/InsipidPoint/ghostty-windows/releases/latest";
+
+/// Custom message posted from the update thread to the message loop.
+const WM_APP_UPDATE_AVAILABLE: u32 = w32.WM_APP + 2;
+
+/// Start a background thread to check for updates.
+fn startUpdateCheck(self: *App) void {
+    _ = std.Thread.spawn(.{}, updateCheckThread, .{self}) catch |err| {
+        log.warn("failed to start update check thread: {}", .{err});
+    };
+}
+
+/// Background thread: fetch latest release tag from GitHub, compare
+/// with current version, post a message if newer.
+fn updateCheckThread(app: *App) void {
+    const result = fetchLatestVersion() catch |err| {
+        log.debug("update check failed: {}", .{err});
+        return;
+    };
+
+    // Compare with current version. The GitHub tag is like "v1.3.2"
+    // and our version string is like "1.3.2-main+hash".
+    const current = build_config.version_string;
+    const latest = result.tag;
+    const latest_len = result.len;
+
+    if (latest_len == 0) return;
+
+    // Strip leading 'v' from tag if present
+    const latest_start: usize = if (latest_len > 0 and latest[0] == 'v') 1 else 0;
+    const latest_ver = latest[latest_start..latest_len];
+
+    // Compare: if the latest tag doesn't match our version prefix, notify.
+    // We check if current version starts with the latest tag. If it does,
+    // we're up to date (or on a dev build of that version).
+    if (!std.mem.startsWith(u8, current, latest_ver)) {
+        // Check if latest is actually newer (not older) by parsing semver.
+        // For simplicity, just notify if they differ — the user can decide.
+        log.info("update available: current={s} latest={s}", .{ current, latest_ver });
+
+        // Post message to the main thread to show notification.
+        // Store the version string in a static buffer for the main thread.
+        @memcpy(update_version_buf[0..latest_len], latest[0..latest_len]);
+        update_version_len = @intCast(latest_len);
+        if (app.msg_hwnd) |hwnd| {
+            _ = w32.PostMessageW(hwnd, WM_APP_UPDATE_AVAILABLE, 0, 0);
+        }
+    } else {
+        log.debug("up to date: {s}", .{current});
+    }
+}
+
+var update_version_buf: [128]u8 = undefined;
+var update_version_len: u8 = 0;
+
+/// Show a notification balloon that an update is available.
+fn showUpdateNotification(self: *App) void {
+    const hwnd = self.msg_hwnd orelse return;
+    const ver_len = update_version_len;
+    if (ver_len == 0) return;
+
+    var nid: w32.NOTIFYICONDATAW = std.mem.zeroes(w32.NOTIFYICONDATAW);
+    nid.cbSize = @sizeOf(w32.NOTIFYICONDATAW);
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP;
+    nid.hIcon = w32.LoadIconW(null, w32.IDI_APPLICATION);
+    nid.dwInfoFlags = w32.NIIF_INFO;
+    nid.uVersion_or_uTimeout = 10000;
+
+    // Title
+    const title = std.unicode.utf8ToUtf16LeStringLiteral("Ghostty Update Available");
+    @memcpy(nid.szInfoTitle[0..title.len], title);
+    nid.szInfoTitle[title.len] = 0;
+
+    // Body: "Version X.Y.Z is available. Visit GitHub to download."
+    var body_utf8: [256]u8 = undefined;
+    const ver = update_version_buf[0..ver_len];
+    const body_len = std.fmt.bufPrint(&body_utf8, "Version {s} is available.\nVisit GitHub releases to download.", .{ver}) catch return;
+    var body_utf16: [256]u16 = undefined;
+    const wlen = std.unicode.utf8ToUtf16Le(&body_utf16, body_len) catch 0;
+    @memcpy(nid.szInfo[0..wlen], body_utf16[0..wlen]);
+    nid.szInfo[wlen] = 0;
+
+    const tip = std.unicode.utf8ToUtf16LeStringLiteral("Ghostty");
+    @memcpy(nid.szTip[0..tip.len], tip);
+    nid.szTip[tip.len] = 0;
+
+    _ = w32.Shell_NotifyIconW(w32.NIM_ADD, &nid);
+    _ = w32.Shell_NotifyIconW(w32.NIM_MODIFY, &nid);
+    _ = w32.SetTimer(hwnd, 2, 10000, null);
+}
+
+const VersionResult = struct { tag: [128]u8, len: usize };
+
+/// Fetch the latest release tag from GitHub. Returns the tag string.
+fn fetchLatestVersion() !VersionResult {
+    const agent = std.unicode.utf8ToUtf16LeStringLiteral("Ghostty-UpdateCheck/1.0");
+    const inet = w32.InternetOpenW(agent, w32.INTERNET_OPEN_TYPE_PRECONFIG, null, null, 0) orelse
+        return error.InternetOpenFailed;
+    defer _ = w32.InternetCloseHandle(inet);
+
+    // Convert URL to UTF-16
+    var url_buf: [256]u16 = undefined;
+    const url_len = std.unicode.utf8ToUtf16Le(&url_buf, UPDATE_URL) catch return error.UrlTooLong;
+    url_buf[url_len] = 0;
+
+    const flags = w32.INTERNET_FLAG_SECURE | w32.INTERNET_FLAG_NO_CACHE_WRITE | w32.INTERNET_FLAG_RELOAD;
+    const conn = w32.InternetOpenUrlW(inet, @ptrCast(&url_buf), null, 0, flags, 0) orelse
+        return error.InternetOpenUrlFailed;
+    defer _ = w32.InternetCloseHandle(conn);
+
+    // Read response (we only need the first ~4KB for tag_name)
+    var response: [4096]u8 = undefined;
+    var total: usize = 0;
+    while (total < response.len) {
+        var bytes_read: u32 = 0;
+        if (w32.InternetReadFile(conn, response[total..].ptr, @intCast(response.len - total), &bytes_read) == 0) {
+            return error.ReadFailed;
+        }
+        if (bytes_read == 0) break;
+        total += bytes_read;
+    }
+
+    // Find "tag_name" in JSON response (simple string search, no JSON parser needed)
+    const json = response[0..total];
+    const needle = "\"tag_name\":\"";
+    const start = std.mem.indexOf(u8, json, needle) orelse return error.TagNotFound;
+    const tag_start = start + needle.len;
+    const tag_end = std.mem.indexOfPos(u8, json, tag_start, "\"") orelse return error.TagNotFound;
+    const tag = json[tag_start..tag_end];
+
+    var result: VersionResult = .{ .tag = undefined, .len = tag.len };
+    if (tag.len > 128) return error.TagTooLong;
+    @memcpy(result.tag[0..tag.len], tag);
+    return result;
 }
 
 /// Start the quit timer. Called when the last surface closes.
@@ -1417,6 +1570,11 @@ fn msgWndProc(
 
     if (msg == WM_APP_WAKEUP) {
         app.tick();
+        return 0;
+    }
+
+    if (msg == WM_APP_UPDATE_AVAILABLE) {
+        app.showUpdateNotification();
         return 0;
     }
 

@@ -1115,3 +1115,40 @@ pub extern "user32" fn SetForegroundWindow(
 pub const HWND_TOPMOST: ?HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 pub const SWP_NOACTIVATE: u32 = 0x0010;
 pub const SW_SHOWNOACTIVATE: i32 = 4;
+
+// -----------------------------------------------------------------------
+// WinINet — HTTP client for update checks
+// -----------------------------------------------------------------------
+
+pub const HINTERNET = *opaque {};
+
+pub const INTERNET_OPEN_TYPE_PRECONFIG: u32 = 0;
+pub const INTERNET_FLAG_SECURE: u32 = 0x00800000;
+pub const INTERNET_FLAG_NO_CACHE_WRITE: u32 = 0x04000000;
+pub const INTERNET_FLAG_RELOAD: u32 = 0x80000000;
+
+pub extern "wininet" fn InternetOpenW(
+    lpszAgent: [*:0]const u16,
+    dwAccessType: u32,
+    lpszProxy: ?[*:0]const u16,
+    lpszProxyBypass: ?[*:0]const u16,
+    dwFlags: u32,
+) callconv(.c) ?HINTERNET;
+
+pub extern "wininet" fn InternetOpenUrlW(
+    hInternet: HINTERNET,
+    lpszUrl: [*:0]const u16,
+    lpszHeaders: ?[*:0]const u16,
+    dwHeadersLength: u32,
+    dwFlags: u32,
+    dwContext: usize,
+) callconv(.c) ?HINTERNET;
+
+pub extern "wininet" fn InternetReadFile(
+    hFile: HINTERNET,
+    lpBuffer: [*]u8,
+    dwNumberOfBytesToRead: u32,
+    lpdwNumberOfBytesRead: *u32,
+) callconv(.c) i32;
+
+pub extern "wininet" fn InternetCloseHandle(hInternet: HINTERNET) callconv(.c) i32;
