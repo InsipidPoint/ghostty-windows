@@ -1097,8 +1097,13 @@ fn updateCheckThread(app: *App) void {
     const latest_len = result.len;
     if (latest_len == 0) return;
 
-    // Strip leading 'v' from tag if present
-    const latest_start: usize = if (latest[0] == 'v') 1 else 0;
+    // Strip "win-v" or "v" prefix from tag
+    const latest_start: usize = if (std.mem.startsWith(u8, latest[0..latest_len], "win-v"))
+        5
+    else if (latest[0] == 'v')
+        1
+    else
+        0;
     const latest_ver = latest[latest_start..latest_len];
 
     // Parse both versions as semver for proper comparison
