@@ -11,6 +11,8 @@
     ·
     <a href="#building">Building</a>
     ·
+    <a href="#keyboard-shortcuts">Shortcuts</a>
+    ·
     <a href="#configuration">Configuration</a>
     ·
     <a href="https://ghostty.org/docs">Upstream Docs</a>
@@ -29,63 +31,38 @@ The goal is to track the upstream main branch while maintaining a native Windows
 
 **Feature-complete** — 100% apprt action coverage (65/65 actions handled). The terminal is ready for daily use.
 
-### Working
+### Features
 
-- Native Win32 window with OpenGL 4.6 rendering (WGL)
-- Terminal emulation (full VT sequence support, colors, scrollback)
-- Font rendering via FreeType + HarfBuzz (bundled JetBrains Mono + system font discovery via DirectWrite)
-- Keyboard input with full modifier support
-- Mouse input (click, drag selection, scroll wheel)
-- Shell spawning via Windows ConPTY (cmd.exe, PowerShell, WSL)
-- Win32 Input Mode (mode 9001) for full Unicode support through ConPTY
+**Terminal**
+- Full VT sequence support with OpenGL 4.6 rendering (WGL)
+- FreeType + HarfBuzz fonts with DirectWrite system font discovery
+- ConPTY shell spawning (cmd.exe, PowerShell, WSL)
+- Win32 Input Mode (mode 9001) for full Unicode through ConPTY
 - IME support for CJK input (Japanese, Chinese, Korean)
-- Window resize with terminal grid reflow
-- Per-monitor DPI awareness
-- Clipboard copy/paste (Ctrl+Shift+C/V)
-- Window title updates from shell
-- Process exit detection
-- Multiple windows with proper lifecycle management
-- Config file loading (`%LOCALAPPDATA%\ghostty\config`)
-- Shell integration for PowerShell (prompt marking, CWD tracking, title)
-- Dark mode window chrome (DWM)
-- Configurable quit-after-last-window-closed with delay
-- Fullscreen toggle (Ctrl+Enter)
-- Background opacity / transparency (`background-opacity` config)
-- Scrollbar (native Win32 scrollbar synced with terminal scrollback)
-- Close confirmation dialog when a process is still running
-- URL detection with Ctrl+click to open in default browser
-- Desktop notifications via Shell_NotifyIcon balloon (OSC 9, OSC 777)
-- Persistent mouse cursor shapes (WM_SETCURSOR handling)
-- Find-in-terminal search bar (Ctrl+Shift+F, Enter/Shift+Enter, Escape)
-- Initial window size from config (`window-width`, `window-height`)
-- Config reload from disk (`reload_config` action)
-- Child process exit notification
-- Toggle window decorations (hide/show title bar)
+- Per-monitor DPI awareness, window resize with grid reflow
+- 463 built-in color themes (same as macOS)
 
-- Tabbed windows with custom GDI tab bar (Ctrl+Shift+T to open, Ctrl+Shift+W to close)
-  - Active tab highlight with blue accent line, close buttons, hover effects
-  - New-tab (+) button, click to switch tabs, Ctrl+Shift+PgUp/PgDn navigation
-  - Tab titles from shell, `window-new-tab-position` and `window-show-tab-bar` configs
-  - Move tab left/right (`move_tab` action with wrapping)
-  - Drag-and-drop tab reorder (mouse drag tabs to rearrange)
-  - Inline tab rename (double-click tab to edit title, or `prompt_tab_title` action)
-  - Close tab modes: current, all others, all to the right (`close_tab` with modes)
-  - Right-click context menu (Close, Close Others, Close to Right, New Tab)
-- Split panes using the core `SplitTree` data structure (same as GTK)
-  - Split right (Ctrl+Shift+O), split down (Ctrl+Shift+E)
-  - Navigate between panes (Ctrl+Shift+[ / ], or directional via keybindings)
-  - Resize splits (keyboard `resize_split` action, or mouse drag on divider)
-  - Equalize all splits, toggle split zoom
-  - Close individual pane (Ctrl+Shift+W) — remaining panes stay open
-  - DPI-scaled divider lines with drag resize cursor feedback
-  - Double-click divider to equalize that split
-  - Splits are per-tab — each tab has its own independent split tree
+**Windows & Tabs**
+- Multiple windows, tabbed interface with custom GDI tab bar
+- Tab drag-and-drop reorder, inline rename (double-click), right-click context menu
+- Close tab modes: current, all others, all to the right
 
-- Command palette (Ctrl+Shift+P) — filterable list of all actions with keybinding hints
-- Quick terminal (toggle with global hotkey) — slide-in/out from any screen edge
-- Font size inheritance (`window-inherit-font-size`) — new tabs/splits keep adjusted font size
-- DPI-scaled popups (search bar, command palette scale with display DPI)
-- Themes (463 built-in themes, same as macOS — requires `bin/share` directory layout)
+**Split Panes**
+- Split right/down/left/up, navigate between panes
+- Mouse drag to resize dividers, double-click to equalize
+- Toggle split zoom, equalize all splits
+- Independent split tree per tab
+
+**Extras**
+- Command palette with filterable actions and keybinding hints
+- Quick terminal (slide-in/out from screen edge with global hotkey)
+- Find-in-terminal search bar
+- URL detection with Ctrl+click to open in browser
+- Desktop notifications (OSC 9, OSC 777)
+- Background opacity, fullscreen, window decorations toggle
+- Font size zoom with inheritance to new tabs/splits
+- Config hot-reload, scrollbar, dark mode chrome
+- Shell integration for PowerShell (prompt marking, CWD, title)
 
 ### Platform-Specific Notes
 
@@ -113,6 +90,81 @@ The executable is at `zig-out/bin/ghostty.exe`. Copy it to a Windows path and ru
 zig build -Dapp-runtime=win32 -Dtarget=x86_64-windows -Doptimize=ReleaseFast
 ```
 
+## Keyboard Shortcuts
+
+All keybindings are configurable via the `keybind` config option. These are the defaults:
+
+### General
+
+| Action | Shortcut |
+|--------|----------|
+| New window | `Ctrl+Shift+N` |
+| Close surface (tab/pane) | `Ctrl+Shift+W` |
+| Close window | `Ctrl+Shift+Q` |
+| Toggle fullscreen | `Ctrl+Enter` |
+| Command palette | `Ctrl+Shift+P` |
+| Open config file | `Ctrl+,` |
+| Reload config | `Ctrl+Shift+,` |
+| Quit | `Ctrl+Shift+Q` |
+
+### Tabs
+
+| Action | Shortcut |
+|--------|----------|
+| New tab | `Ctrl+Shift+T` |
+| Next tab | `Ctrl+Page Down` |
+| Previous tab | `Ctrl+Page Up` |
+| Go to tab 1–8 | `Ctrl+1` – `Ctrl+8` |
+| Go to last tab | `Ctrl+9` |
+| Move tab left | Configurable (`move_tab:-1`) |
+| Move tab right | Configurable (`move_tab:1`) |
+| Drag reorder | Mouse drag on tab |
+| Rename tab | Double-click tab |
+| Tab context menu | Right-click tab |
+
+### Split Panes
+
+| Action | Shortcut |
+|--------|----------|
+| Split right | `Ctrl+Shift+O` |
+| Split down | `Ctrl+Shift+E` |
+| Focus next pane | `Ctrl+Shift+]` |
+| Focus previous pane | `Ctrl+Shift+[` |
+| Equalize splits | Configurable (`equalize_splits`) |
+| Toggle split zoom | Configurable (`toggle_split_zoom`) |
+| Resize split | Mouse drag on divider |
+| Equalize split | Double-click divider |
+
+### Text & Clipboard
+
+| Action | Shortcut |
+|--------|----------|
+| Copy | `Ctrl+Shift+C` |
+| Paste | `Ctrl+Shift+V` |
+| Select all | `Ctrl+Shift+A` |
+| Find | `Ctrl+Shift+F` |
+| Find next | `Enter` (in search bar) |
+| Find previous | `Shift+Enter` (in search bar) |
+| Close search | `Escape` |
+
+### Font Size
+
+| Action | Shortcut |
+|--------|----------|
+| Increase font size | `Ctrl+=` |
+| Decrease font size | `Ctrl+-` |
+| Reset font size | `Ctrl+0` |
+
+### Quick Terminal
+
+The quick terminal requires a keybinding in your config:
+
+```
+keybind = global:ctrl+grave_accent=toggle_quick_terminal
+```
+
+The `global:` prefix makes it work system-wide, even when Ghostty isn't focused.
+
 ## Configuration
 
 Ghostty reads its config file from `%LOCALAPPDATA%\ghostty\config` (or `%XDG_CONFIG_HOME%\ghostty\config` if set). Example:
@@ -131,6 +183,9 @@ command = powershell.exe
 
 # Behavior
 quit-after-last-window-closed = true
+
+# Quick terminal (global hotkey)
+keybind = global:ctrl+grave_accent=toggle_quick_terminal
 ```
 
 See the [upstream documentation](https://ghostty.org/docs/config) for the full list of config options. Most settings work on Windows — the exceptions are platform-specific options (GTK, macOS).
