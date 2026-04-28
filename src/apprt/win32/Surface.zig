@@ -58,6 +58,13 @@ core_surface_initialized: bool = false,
 /// Win32 delivers codepoints > U+FFFF as two WM_CHAR messages (surrogate pair).
 high_surrogate: u16 = 0,
 
+/// Bitmask of currently-pressed mouse buttons (left=1, right=2,
+/// middle=4). Used so SetCapture/ReleaseCapture only run on the
+/// 0→nonzero and nonzero→0 transitions; without this, a right-click
+/// in the middle of a left-button drag would call SetCapture again
+/// (replacing capture) and the next button-up would release prematurely.
+mouse_button_mask: u3 = 0,
+
 /// Whether an IME composition session is active. When true, handleKeyEvent
 /// skips VK_PROCESSKEY events (the IME is intercepting keys), and composed
 /// text is extracted from WM_IME_COMPOSITION instead.
@@ -1658,11 +1665,29 @@ pub fn handleMouseButton(
 
     const mods = getModifiers();
 
-    // Capture mouse on press so drag selection continues outside the window.
-    if (action == .press) {
-        if (self.hwnd) |hwnd| _ = w32.SetCapture(hwnd);
-    } else {
-        _ = w32.ReleaseCapture();
+    // Capture mouse on the first pressed button; release only when all
+    // buttons are up. Otherwise a right-click in the middle of a left-
+    // button drag clobbers capture, and the next up-event releases it
+    // for everyone.
+    const bit: u3 = switch (button) {
+        .left => 1,
+        .right => 2,
+        .middle => 4,
+        else => 0,
+    };
+    if (bit != 0) {
+        const prev = self.mouse_button_mask;
+        if (action == .press) {
+            self.mouse_button_mask |= bit;
+            if (prev == 0) {
+                if (self.hwnd) |hwnd| _ = w32.SetCapture(hwnd);
+            }
+        } else {
+            self.mouse_button_mask &= ~bit;
+            if (prev != 0 and self.mouse_button_mask == 0) {
+                _ = w32.ReleaseCapture();
+            }
+        }
     }
 
     // Update cursor position first
