@@ -24,7 +24,9 @@ param(
     [string]$Text,
     [int]$ProcessId,
     [long]$Hwnd = 0,
-    [int]$WaitMs = 3000
+    [int]$WaitMs = 3000,
+    [int]$Width = 0,
+    [int]$Height = 0
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -74,6 +76,15 @@ public class Win32Test {
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll")]
+    public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_NOMOVE = 0x0002;
     public const uint WM_CLOSE = 0x0010;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -264,6 +275,26 @@ function Invoke-Close {
     Write-Output "CLOSED=true"
 }
 
+function Invoke-Resize {
+    $win = Find-GhosttyWindow -ProcessId $ProcessId -DirectHwnd $Hwnd
+    if (-not $win) {
+        Write-Error "No ghostty window found"
+        exit 1
+    }
+    if ($Width -le 0 -or $Height -le 0) {
+        Write-Error "Width and Height must be positive"
+        exit 1
+    }
+    # Use SetWindowPos (size only) so the window doesn't move.
+    $flags = [Win32Test]::SWP_NOZORDER -bor [Win32Test]::SWP_NOACTIVATE -bor [Win32Test]::SWP_NOMOVE
+    [Win32Test]::SetWindowPos($win.Handle, [IntPtr]::Zero, 0, 0, $Width, $Height, $flags) | Out-Null
+    Start-Sleep -Milliseconds 200
+    $cr = New-Object Win32Test+RECT
+    [Win32Test]::GetClientRect($win.Handle, [ref]$cr) | Out-Null
+    Write-Output "RESIZED=true"
+    Write-Output "CLIENT_SIZE=$($cr.Right)x$($cr.Bottom)"
+}
+
 function Invoke-Kill {
     if ($ProcessId) {
         # Use taskkill /T to kill the entire process tree (ghostty + child cmd.exe).
@@ -286,6 +317,7 @@ switch ($Action.ToLower()) {
     "sendtext"   { Invoke-SendText }
     "check"      { Invoke-Check }
     "close"      { Invoke-Close }
+    "resize"     { Invoke-Resize }
     "kill"       { Invoke-Kill }
     default      { Write-Error "Unknown action: $Action"; exit 1 }
 }

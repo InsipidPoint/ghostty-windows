@@ -254,8 +254,57 @@ test_keyboard_input() {
 
 test_resize() {
     echo "▶ test_resize"
-    echo "  ⊘ SKIPPED (resize automation not yet implemented)"
-    SKIP=$((SKIP + 1))
+    GHOSTTY_HWND=0
+    launch_and_set_hwnd 5000
+    local pid window_found
+    pid="$(get_val "$LAUNCH_OUTPUT" PID)"
+    window_found="$(get_val "$LAUNCH_OUTPUT" WINDOW_FOUND)"
+    if [ "$window_found" != "true" ]; then
+        echo "  ✗ Window did not appear"
+        FAIL=$((FAIL + 1))
+        ps -Action kill -ProcessId "$pid" 2>/dev/null || true
+        return
+    fi
+
+    # Capture initial client size.
+    local before
+    before="$(ps -Action check -ProcessId "$pid")"
+    local before_size
+    before_size="$(get_val "$before" CLIENT_SIZE)"
+    echo "  Initial client size: $before_size"
+
+    # Resize the window to 1024x768 (typically larger than the default).
+    local after
+    after="$(ps -Action resize -ProcessId "$pid" -Width 1024 -Height 768)"
+    local after_size
+    after_size="$(get_val "$after" CLIENT_SIZE)"
+    echo "  After resize: $after_size"
+
+    if [ -z "$after_size" ] || [ "$before_size" = "$after_size" ]; then
+        echo "  ✗ Client size did not change after resize"
+        FAIL=$((FAIL + 1))
+        ps -Action kill -ProcessId "$pid" 2>/dev/null || true
+        return
+    fi
+
+    # Verify the window is still alive after another resize.
+    ps -Action resize -ProcessId "$pid" -Width 640 -Height 480 >/dev/null
+    sleep 1
+    local check
+    check="$(ps -Action check -ProcessId "$pid")"
+    local exists
+    exists="$(get_val "$check" EXISTS)"
+    if [ "$exists" != "true" ]; then
+        echo "  ✗ Window died after second resize"
+        FAIL=$((FAIL + 1))
+        ps -Action kill -ProcessId "$pid" 2>/dev/null || true
+        return
+    fi
+    echo "  ✓ Window survived two resizes; client size changed"
+
+    ps -Action kill -ProcessId "$pid" 2>/dev/null || true
+    PASS=$((PASS + 1))
+    echo "  ● PASSED"
 }
 
 test_multiple_windows() {
