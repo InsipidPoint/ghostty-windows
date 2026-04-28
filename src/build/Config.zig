@@ -267,14 +267,23 @@ pub fn init(b: *std.Build, appVersion: []const u8) !Config {
         if (vsn.tag) |tag| {
             // Tip releases behave just like any other pre-release so we skip.
             if (!std.mem.eql(u8, tag, "tip")) {
-                const expected = b.fmt("v{d}.{d}.{d}", .{
+                const v_expected = b.fmt("v{d}.{d}.{d}", .{
+                    app_version.major,
+                    app_version.minor,
+                    app_version.patch,
+                });
+                // The Windows fork uses a `win-v` prefix to avoid colliding
+                // with upstream's `v` tags. Accept either.
+                const winv_expected = b.fmt("win-v{d}.{d}.{d}", .{
                     app_version.major,
                     app_version.minor,
                     app_version.patch,
                 });
 
-                if (!std.mem.eql(u8, tag, expected)) {
-                    @panic("tagged releases must be in vX.Y.Z format matching build.zig");
+                if (!std.mem.eql(u8, tag, v_expected) and
+                    !std.mem.eql(u8, tag, winv_expected))
+                {
+                    @panic("tagged releases must be in vX.Y.Z or win-vX.Y.Z format matching build.zig");
                 }
 
                 break :version .{
