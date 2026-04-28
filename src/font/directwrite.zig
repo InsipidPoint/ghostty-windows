@@ -500,12 +500,24 @@ pub const IDWriteLocalizedStrings = extern struct {
         return utf16ToUtf8Alloc(alloc, buf[0..len]);
     }
 
-    /// Get the best localized name (prefer "en-us", fall back to index 0).
+    /// Get the best localized name. Prefer en-US (the canonical Windows
+    /// English locale), then en-us, then en-GB, then bare "en", then
+    /// index 0. Falling straight to index 0 risks returning e.g. the
+    /// Japanese name on a Japanese-locale Windows install, which would
+    /// break config matching against the canonical English family name.
     pub fn getLocalizedName(self: *const IDWriteLocalizedStrings, alloc: std.mem.Allocator) ![:0]const u8 {
-        // Try "en-us" first
-        const en_us: [*:0]const u16 = &[_:0]u16{ 'e', 'n', '-', 'u', 's' };
-        const locale_index = try self.findLocaleName(en_us) orelse 0;
-        return self.toUtf8Alloc(alloc, locale_index);
+        const try_locales = [_][*:0]const u16{
+            &[_:0]u16{ 'e', 'n', '-', 'U', 'S' },
+            &[_:0]u16{ 'e', 'n', '-', 'u', 's' },
+            &[_:0]u16{ 'e', 'n', '-', 'G', 'B' },
+            &[_:0]u16{ 'e', 'n' },
+        };
+        for (try_locales) |loc| {
+            if (try self.findLocaleName(loc)) |idx| {
+                return self.toUtf8Alloc(alloc, idx);
+            }
+        }
+        return self.toUtf8Alloc(alloc, 0);
     }
 };
 
