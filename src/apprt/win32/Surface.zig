@@ -1459,6 +1459,39 @@ pub fn handleResize(self: *Surface, width: u32, height: u32) void {
 /// Handle WM_DPICHANGED.
 pub fn handleDpiChange(self: *Surface) void {
     self.updateDpiScale();
+
+    // Popup fonts were created at the previous DPI. Rebuild them at
+    // the new scale so search-bar / palette text doesn't render
+    // tiny/huge after dragging the window between monitors.
+    const s = self.scale;
+    if (self.search_font) |old| {
+        _ = w32.DeleteObject(old);
+        self.search_font = null;
+    }
+    if (self.palette_font) |old| {
+        _ = w32.DeleteObject(old);
+        self.palette_font = null;
+    }
+    if (self.search_edit) |edit| {
+        self.search_font = w32.CreateFontW(
+            -@as(i32, @intFromFloat(@round(16.0 * s))), 0, 0, 0, 400,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI"),
+        );
+        if (self.search_font) |f| {
+            _ = w32.SendMessageW(edit, w32.WM_SETFONT, @intFromPtr(f), 1);
+        }
+    }
+    if (self.palette_edit) |edit| {
+        self.palette_font = w32.CreateFontW(
+            -@as(i32, @intFromFloat(@round(16.0 * s))), 0, 0, 0, 400,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI"),
+        );
+        if (self.palette_font) |f| {
+            _ = w32.SendMessageW(edit, w32.WM_SETFONT, @intFromPtr(f), 1);
+        }
+    }
 }
 
 /// Handle WM_KEYDOWN / WM_SYSKEYDOWN / WM_KEYUP / WM_SYSKEYUP.
