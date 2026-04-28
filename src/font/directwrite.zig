@@ -570,7 +570,10 @@ pub fn utf8ToUtf16Alloc(alloc: std.mem.Allocator, utf8: []const u8) ![:0]u16 {
     return try result.toOwnedSliceSentinel(alloc, 0);
 }
 
-/// Calculate the UTF-8 length of a UTF-16 buffer (without surrogates decoding).
+/// Calculate the UTF-8 length of a UTF-16 buffer. Validates surrogate
+/// pairing so the encoder below doesn't over-allocate for malformed
+/// input — a high surrogate followed by a non-low-surrogate code unit
+/// is rejected as an error rather than silently consuming 4 bytes.
 fn calcUtf8Len(utf16: []const u16) !usize {
     var len: usize = 0;
     var i: usize = 0;
@@ -578,16 +581,24 @@ fn calcUtf8Len(utf16: []const u16) !usize {
         const c = utf16[i];
         if (c < 0x80) {
             len += 1;
+            i += 1;
         } else if (c < 0x800) {
             len += 2;
+            i += 1;
         } else if (c >= 0xD800 and c <= 0xDBFF) {
-            // High surrogate — expect low surrogate
+            // High surrogate — must be followed by a low surrogate.
+            if (i + 1 >= utf16.len) return error.DirectWriteError;
+            const low = utf16[i + 1];
+            if (low < 0xDC00 or low > 0xDFFF) return error.DirectWriteError;
             len += 4;
-            i += 1; // skip low surrogate
+            i += 2;
+        } else if (c >= 0xDC00 and c <= 0xDFFF) {
+            // Lone low surrogate is not valid UTF-16.
+            return error.DirectWriteError;
         } else {
             len += 3;
+            i += 1;
         }
-        i += 1;
     }
     return len;
 }
@@ -604,12 +615,13 @@ pub fn utf16ToUtf8Alloc(alloc: std.mem.Allocator, utf16: []const u16) ![:0]const
         const c = utf16[i];
         var cp: u21 = undefined;
         if (c >= 0xD800 and c <= 0xDBFF) {
-            // Surrogate pair
-            if (i + 1 >= utf16.len) return error.DirectWriteError;
+            // Surrogate pair (already validated by calcUtf8Len above).
             const low = utf16[i + 1];
-            if (low < 0xDC00 or low > 0xDFFF) return error.DirectWriteError;
             cp = @intCast((@as(u32, c - 0xD800) << 10) + @as(u32, low - 0xDC00) + 0x10000);
             i += 2;
+        } else if (c >= 0xDC00 and c <= 0xDFFF) {
+            // Lone low surrogate — also already rejected by calcUtf8Len.
+            return error.DirectWriteError;
         } else {
             cp = @intCast(c);
             i += 1;
