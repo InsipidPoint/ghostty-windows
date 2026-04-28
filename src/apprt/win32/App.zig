@@ -1117,26 +1117,38 @@ fn updateCheckThread(app: *App) void {
     };
 
     // Only notify if the remote version is strictly newer
-    if (latest_sv.order(current_sv) == .gt) {
-        log.info("update available: current={s} latest={s}", .{ WIN_VERSION, latest_ver });
-        @memcpy(update_version_buf[0..latest_len], latest[0..latest_len]);
-        update_version_len = @intCast(latest_len);
-        if (app.msg_hwnd) |hwnd| {
-            _ = w32.PostMessageW(hwnd, WM_APP_UPDATE_AVAILABLE, 0, 0);
-        }
-    } else {
+    if (latest_sv.order(current_sv) != .gt) {
         log.debug("up to date: current={s} latest={s}", .{ WIN_VERSION, latest_ver });
+        return;
+    }
+    log.info("update available: current={s} latest={s}", .{ WIN_VERSION, latest_ver });
+
+    const hwnd = app.msg_hwnd orelse return;
+
+    // Allocate a heap copy and hand ownership to the message handler via
+    // wparam/lparam. This avoids a static-buffer race between this worker
+    // thread writing the version and the message thread reading it.
+    const alloc = app.core_app.alloc;
+    const owned = alloc.dupe(u8, latest_ver) catch {
+        log.warn("oom allocating update version", .{});
+        return;
+    };
+    const wparam: usize = @intFromPtr(owned.ptr);
+    const lparam: isize = @intCast(owned.len);
+    if (w32.PostMessageW(hwnd, WM_APP_UPDATE_AVAILABLE, wparam, lparam) == 0) {
+        // PostMessage failed (e.g., HWND already destroyed). Free the
+        // buffer here since the handler will never run.
+        alloc.free(owned);
     }
 }
 
-var update_version_buf: [128]u8 = undefined;
-var update_version_len: u8 = 0;
-
-/// Show a notification balloon that an update is available.
-fn showUpdateNotification(self: *App) void {
+/// Show a notification balloon that an update is available. The handler
+/// owns `ver` (heap-allocated by updateCheckThread) and is responsible
+/// for freeing it.
+fn showUpdateNotification(self: *App, ver: []const u8) void {
     const hwnd = self.msg_hwnd orelse return;
-    const ver_len = update_version_len;
-    if (ver_len == 0) return;
+    if (ver.len == 0) return;
+    const ver_len = ver.len;
 
     var nid: w32.NOTIFYICONDATAW = std.mem.zeroes(w32.NOTIFYICONDATAW);
     nid.cbSize = @sizeOf(w32.NOTIFYICONDATAW);
@@ -1154,8 +1166,7 @@ fn showUpdateNotification(self: *App) void {
 
     // Body: "Version X.Y.Z is available. Visit GitHub to download."
     var body_utf8: [256]u8 = undefined;
-    const ver = update_version_buf[0..ver_len];
-    const body_len = std.fmt.bufPrint(&body_utf8, "Version {s} is available.\nVisit GitHub releases to download.", .{ver}) catch return;
+    const body_len = std.fmt.bufPrint(&body_utf8, "Version {s} is available.\nVisit GitHub releases to download.", .{ver[0..ver_len]}) catch return;
     var body_utf16: [256]u16 = undefined;
     const wlen = std.unicode.utf8ToUtf16Le(&body_utf16, body_len) catch 0;
     @memcpy(nid.szInfo[0..wlen], body_utf16[0..wlen]);
@@ -1582,7 +1593,15 @@ fn msgWndProc(
     }
 
     if (msg == WM_APP_UPDATE_AVAILABLE) {
-        app.showUpdateNotification();
+        // wparam = heap pointer to the version string, lparam = length.
+        // We own the buffer and must free it after use.
+        if (wparam != 0 and lparam > 0) {
+            const ptr: [*]u8 = @ptrFromInt(wparam);
+            const len: usize = @intCast(lparam);
+            const ver = ptr[0..len];
+            defer app.core_app.alloc.free(ver);
+            app.showUpdateNotification(ver);
+        }
         return 0;
     }
 
