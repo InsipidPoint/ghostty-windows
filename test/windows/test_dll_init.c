@@ -1,17 +1,18 @@
 /*
- * Minimal reproducer for the libghostty DLL CRT initialization issue.
+ * Minimal reproducer for the ghostty-internal DLL CRT initialization issue.
  *
  * Before the fix (DllMain calling __vcrt_initialize / __acrt_initialize),
- * loading ghostty.dll and calling any function that touches the C runtime
- * crashed with "access violation writing 0x0000000000000024" because Zig's
- * _DllMainCRTStartup does not initialize the MSVC C runtime for DLL targets.
+ * loading ghostty-internal.dll and calling any function that touches the C
+ * runtime crashed with "access violation writing 0x0000000000000024" because
+ * Zig's _DllMainCRTStartup does not initialize the MSVC C runtime for DLL
+ * targets.
  *
  * This test loads the DLL and calls ghostty_info, which exercises the CRT
  * (string handling, memory). If it returns a version string without
  * crashing, the CRT is properly initialized.
  *
  * Build:  zig cc test_dll_init.c -o test_dll_init.exe -target native-native-msvc
- * Run:    copy ..\..\zig-out\lib\ghostty.dll . && test_dll_init.exe
+ * Run:    copy ..\..\zig-out\lib\ghostty-internal.dll . && test_dll_init.exe
  *
  * Expected output (after fix):
  *   ghostty_info: <version string>
@@ -29,7 +30,7 @@ typedef struct {
 typedef ghostty_info_s (*ghostty_info_fn)(void);
 
 int main(void) {
-    HMODULE dll = LoadLibraryA("ghostty.dll");
+    HMODULE dll = LoadLibraryA("ghostty-internal.dll");
     if (!dll) {
         fprintf(stderr, "LoadLibrary failed: %lu\n", GetLastError());
         return 1;

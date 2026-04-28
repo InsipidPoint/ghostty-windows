@@ -16,6 +16,7 @@
 #include <ghostty/vt/modes.h>
 #include <ghostty/vt/size_report.h>
 #include <ghostty/vt/grid_ref.h>
+#include <ghostty/vt/kitty_graphics.h>
 #include <ghostty/vt/screen.h>
 #include <ghostty/vt/point.h>
 #include <ghostty/vt/style.h>
@@ -155,13 +156,6 @@ extern "C" {
  */
 
 /**
- * Opaque handle to a terminal instance.
- *
- * @ingroup terminal
- */
-typedef struct GhosttyTerminalImpl* GhosttyTerminal;
-
-/**
  * Terminal initialization options.
  *
  * @ingroup terminal
@@ -186,7 +180,7 @@ typedef struct {
  *
  * @ingroup terminal
  */
-typedef enum {
+typedef enum GHOSTTY_ENUM_TYPED {
   /** Scroll to the top of the scrollback. */
   GHOSTTY_SCROLL_VIEWPORT_TOP,
 
@@ -195,6 +189,7 @@ typedef enum {
 
   /** Scroll by a delta amount (up is negative). */
   GHOSTTY_SCROLL_VIEWPORT_DELTA,
+  GHOSTTY_SCROLL_VIEWPORT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalScrollViewportTag;
 
 /**
@@ -227,12 +222,13 @@ typedef struct {
  *
  * @ingroup terminal
  */
-typedef enum {
+typedef enum GHOSTTY_ENUM_TYPED {
   /** The primary (normal) screen. */
   GHOSTTY_TERMINAL_SCREEN_PRIMARY = 0,
 
   /** The alternate screen. */
   GHOSTTY_TERMINAL_SCREEN_ALTERNATE = 1,
+  GHOSTTY_TERMINAL_SCREEN_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalScreen;
 
 /**
@@ -400,7 +396,7 @@ typedef GhosttyString (*GhosttyTerminalXtversionFn)(GhosttyTerminal terminal,
  *
  * @ingroup terminal
  */
-typedef enum {
+typedef enum GHOSTTY_ENUM_TYPED {
   /**
    * Opaque userdata pointer passed to all callbacks.
    *
@@ -534,6 +530,69 @@ typedef enum {
    * Input type: GhosttyColorRgb[256]*
    */
   GHOSTTY_TERMINAL_OPT_COLOR_PALETTE = 14,
+
+  /**
+   * Set the Kitty image storage limit in bytes.
+   *
+   * Applied to all initialized screens (primary and alternate).
+   * A value of zero disables the Kitty graphics protocol entirely,
+   * deleting all stored images and placements. A NULL value pointer
+   * is equivalent to zero (disables). Has no effect when Kitty graphics
+   * are disabled at build time.
+   *
+   * Input type: uint64_t*
+   */
+  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT = 15,
+
+  /**
+   * Enable or disable Kitty image loading via the file medium.
+   *
+   * A NULL value pointer is a no-op. Has no effect when Kitty graphics
+   * are disabled at build time.
+   *
+   * Input type: bool*
+   */
+  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE = 16,
+
+  /**
+   * Enable or disable Kitty image loading via the temporary file medium.
+   *
+   * A NULL value pointer is a no-op. Has no effect when Kitty graphics
+   * are disabled at build time.
+   *
+   * Input type: bool*
+   */
+  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE = 17,
+
+  /**
+   * Enable or disable Kitty image loading via the shared memory medium.
+   *
+   * A NULL value pointer is a no-op. Has no effect when Kitty graphics
+   * are disabled at build time.
+   *
+   * Input type: bool*
+   */
+  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM = 18,
+
+  /**
+   * Set the maximum bytes the APC handler will buffer for all protocols.
+   * This prevents malicious input from causing unbounded memory allocation.
+   * A NULL value pointer removes all overrides, reverting to the built-in
+   * defaults.
+   *
+   * Input type: size_t*
+   */
+  GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES = 19,
+
+  /**
+   * Set the maximum bytes the APC handler will buffer for Kitty graphics
+   * protocol data. A NULL value pointer removes the override, reverting
+   * to the built-in default.
+   *
+   * Input type: size_t*
+   */
+  GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY = 20,
+  GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalOption;
 
 /**
@@ -544,7 +603,7 @@ typedef enum {
  *
  * @ingroup terminal
  */
-typedef enum {
+typedef enum GHOSTTY_ENUM_TYPED {
   /** Invalid data type. Never results in any data extraction. */
   GHOSTTY_TERMINAL_DATA_INVALID = 0,
 
@@ -756,6 +815,60 @@ typedef enum {
    * Output type: GhosttyColorRgb[256] *
    */
   GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT = 25,
+
+  /**
+   * The Kitty image storage limit in bytes for the active screen.
+   *
+   * A value of zero means the Kitty graphics protocol is disabled.
+   * Returns GHOSTTY_NO_VALUE when Kitty graphics are disabled at build time.
+   *
+   * Output type: uint64_t *
+   */
+  GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_STORAGE_LIMIT = 26,
+
+  /**
+   * Whether the file medium is enabled for Kitty image loading on the
+   * active screen.
+   *
+   * Returns GHOSTTY_NO_VALUE when Kitty graphics are disabled at build time.
+   *
+   * Output type: bool *
+   */
+  GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_FILE = 27,
+
+  /**
+   * Whether the temporary file medium is enabled for Kitty image loading
+   * on the active screen.
+   *
+   * Returns GHOSTTY_NO_VALUE when Kitty graphics are disabled at build time.
+   *
+   * Output type: bool *
+   */
+  GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_TEMP_FILE = 28,
+
+  /**
+   * Whether the shared memory medium is enabled for Kitty image loading
+   * on the active screen.
+   *
+   * Returns GHOSTTY_NO_VALUE when Kitty graphics are disabled at build time.
+   *
+   * Output type: bool *
+   */
+  GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_SHARED_MEM = 29,
+
+  /**
+   * The Kitty graphics image storage for the active screen.
+   *
+   * Returns a borrowed pointer to the image storage. The pointer is valid
+   * until the next mutating terminal call (e.g. ghostty_terminal_vt_write()
+   * or ghostty_terminal_reset()).
+   *
+   * Returns GHOSTTY_NO_VALUE when Kitty graphics are disabled at build time.
+   *
+   * Output type: GhosttyKittyGraphics *
+   */
+  GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS = 30,
+  GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalData;
 
 /**
@@ -945,6 +1058,39 @@ GHOSTTY_API GhosttyResult ghostty_terminal_get(GhosttyTerminal terminal,
                                     void *out);
 
 /**
+ * Get multiple data fields from a terminal in a single call.
+ *
+ * This is an optimization over calling ghostty_terminal_get()
+ * repeatedly, particularly useful in environments with high per-call
+ * overhead such as FFI or Cgo.
+ *
+ * Each element in the keys array specifies a data kind, and the
+ * corresponding element in the values array receives the result.
+ * The type of each values[i] pointer must match the output type
+ * documented for keys[i].
+ *
+ * Processing stops at the first error; on success out_written
+ * is set to count, on error it is set to the index of the
+ * failing key (i.e. the number of values successfully written).
+ *
+ * @param terminal The terminal handle (may be NULL)
+ * @param count Number of key/value pairs
+ * @param keys Array of data kinds to query
+ * @param values Array of output pointers (types must match each key's
+ *               documented output type)
+ * @param[out] out_written On return, receives the number of values
+ *             successfully written (may be NULL)
+ * @return GHOSTTY_SUCCESS if all queries succeed
+ *
+ * @ingroup terminal
+ */
+GHOSTTY_API GhosttyResult ghostty_terminal_get_multi(GhosttyTerminal terminal,
+                                    size_t count,
+                                    const GhosttyTerminalData* keys,
+                                    void** values,
+                                    size_t* out_written);
+
+/**
  * Resolve a point in the terminal grid to a grid reference.
  *
  * Resolves the given point (which can be in active, viewport, screen,
@@ -973,6 +1119,39 @@ GHOSTTY_API GhosttyResult ghostty_terminal_get(GhosttyTerminal terminal,
 GHOSTTY_API GhosttyResult ghostty_terminal_grid_ref(GhosttyTerminal terminal,
                                         GhosttyPoint point,
                                         GhosttyGridRef *out_ref);
+
+/**
+ * Convert a grid reference back to a point in the given coordinate system.
+ *
+ * This is the inverse of ghostty_terminal_grid_ref(): given a grid reference,
+ * it returns the x/y coordinates in the requested coordinate system (active,
+ * viewport, screen, or history).
+ *
+ * The grid reference must have been obtained from the same terminal instance.
+ * Like all grid references, it is only valid until the next mutating terminal
+ * call.
+ *
+ * Not every grid reference is representable in every coordinate system. For
+ * example, a cell in scrollback history cannot be expressed in active
+ * coordinates, and a cell that has scrolled off the visible area cannot be
+ * expressed in viewport coordinates. In these cases, the function returns
+ * GHOSTTY_NO_VALUE.
+ *
+ * @param terminal The terminal handle (NULL returns GHOSTTY_INVALID_VALUE)
+ * @param ref Pointer to the grid reference to convert
+ * @param tag The target coordinate system
+ * @param[out] out On success, set to the coordinate in the requested system (may be NULL)
+ * @return GHOSTTY_SUCCESS on success, GHOSTTY_INVALID_VALUE if the terminal
+ *         or ref is NULL/invalid, GHOSTTY_NO_VALUE if the ref falls outside
+ *         the requested coordinate system
+ *
+ * @ingroup terminal
+ */
+GHOSTTY_API GhosttyResult ghostty_terminal_point_from_grid_ref(
+    GhosttyTerminal terminal,
+    const GhosttyGridRef *ref,
+    GhosttyPointTag tag,
+    GhosttyPointCoordinate *out);
 
 /** @} */
 

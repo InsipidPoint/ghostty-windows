@@ -98,6 +98,11 @@
  * grid refs to inspect cell codepoints, row wrap state, and cell styles.
  */
 
+/** @example c-vt-kitty-graphics/src/main.c
+ * This example demonstrates how to use the system interface to install a
+ * PNG decoder callback and send a Kitty Graphics Protocol image.
+ */
+
 #ifndef GHOSTTY_VT_H
 #define GHOSTTY_VT_H
 
@@ -118,11 +123,14 @@ extern "C" {
 #include <ghostty/vt/osc.h>
 #include <ghostty/vt/sgr.h>
 #include <ghostty/vt/style.h>
+#include <ghostty/vt/sys.h>
 #include <ghostty/vt/key.h>
+#include <ghostty/vt/kitty_graphics.h>
 #include <ghostty/vt/modes.h>
 #include <ghostty/vt/mouse.h>
 #include <ghostty/vt/paste.h>
 #include <ghostty/vt/screen.h>
+#include <ghostty/vt/selection.h>
 #include <ghostty/vt/size_report.h>
 #include <ghostty/vt/wasm.h>
 

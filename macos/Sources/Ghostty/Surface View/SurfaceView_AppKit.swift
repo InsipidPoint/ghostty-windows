@@ -7,15 +7,9 @@ import GhosttyKit
 
 extension Ghostty {
     /// The NSView implementation for a terminal surface.
-    class SurfaceView: OSView, ObservableObject, Codable, Identifiable {
-        typealias ID = UUID
-
-        /// Unique ID per surface
-        let id: UUID
-
+    class SurfaceView: OSSurfaceView, Codable, Identifiable {
         // The current title of the surface as defined by the pty. This can be
-        // changed with escape codes. This is public because the callbacks go
-        // to the app level and it is set from there.
+        // changed with escape codes.
         @Published private(set) var title: String = "" {
             didSet {
                 if !title.isEmpty {
@@ -25,28 +19,8 @@ extension Ghostty {
             }
         }
 
-        // The current pwd of the surface as defined by the pty. This can be
-        // changed with escape codes.
-        @Published var pwd: String?
-
-        // The cell size of this surface. This is set by the core when the
-        // surface is first created and any time the cell size changes (i.e.
-        // when the font size changes). This is used to allow windows to be
-        // resized in discrete steps of a single cell.
-        @Published var cellSize: NSSize = .zero
-
-        // The health state of the surface. This currently only reflects the
-        // renderer health. In the future we may want to make this an enum.
-        @Published var healthy: Bool = true
-
-        // Any error while initializing the surface.
-        @Published var error: Error?
-
-        // The hovered URL string
-        @Published var hoverUrl: String?
-
         // The progress report (if any)
-        @Published var progressReport: Action.ProgressReport? {
+        override var progressReport: Action.ProgressReport? {
             didSet {
                 // Cancel any existing timer
                 progressReportTimer?.invalidate()
@@ -65,11 +39,8 @@ extension Ghostty {
         // The currently active key sequence. The sequence is not active if this is empty.
         @Published var keySequence: [KeyboardShortcut] = []
 
-        // The currently active key tables. Empty if no tables are active.
-        @Published var keyTables: [String] = []
-
         // The current search state. When non-nil, the search overlay should be shown.
-        @Published var searchState: SearchState? {
+        override var searchState: SearchState? {
             didSet {
                 if let searchState {
                     // I'm not a Combine expert so if there is a better way to do this I'm
@@ -105,14 +76,6 @@ extension Ghostty {
         // Cancellable for search state needle changes
         private var searchNeedleCancellable: AnyCancellable?
 
-        // The time this surface last became focused. This is a ContinuousClock.Instant
-        // on supported platforms.
-        @Published var focusInstant: ContinuousClock.Instant?
-
-        // Returns sizing information for the surface. This is the raw C
-        // structure because I'm lazy.
-        @Published var surfaceSize: ghostty_surface_size_s?
-
         // Whether the pointer should be visible or not
         @Published private(set) var pointerStyle: CursorStyle = .horizontalText
 
@@ -135,12 +98,6 @@ extension Ghostty {
 
         /// True when the bell is active. This is set inactive on focus or event.
         @Published private(set) var bell: Bool = false
-
-        /// True when the surface is in readonly mode.
-        @Published private(set) var readonly: Bool = false
-
-        /// True when the surface should show a highlight effect (e.g., when presented via goto_split).
-        @Published private(set) var highlighted: Bool = false
 
         // An initial size to request for a window. This will only affect
         // then the view is moved to a new window.
@@ -207,7 +164,7 @@ extension Ghostty {
         private(set) var surfaceModel: Ghostty.Surface?
 
         /// Returns the underlying C value for the surface. See "note" on surfaceModel.
-        var surface: ghostty_surface_t? {
+        override var surface: ghostty_surface_t? {
             surfaceModel?.unsafeCValue
         }
         /// Current scrollbar state, cached here for persistence across rebuilds
@@ -255,7 +212,6 @@ extension Ghostty {
 
         init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
             self.markedText = NSMutableAttributedString()
-            self.id = uuid ?? .init()
 
             // Our initial config always is our application wide config.
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
@@ -273,7 +229,7 @@ extension Ghostty {
             // Initialize with some default frame size. The important thing is that this
             // is non-zero so that our layer bounds are non-zero so that our renderer
             // can do SOMETHING.
-            super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+            super.init(id: uuid, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
 
             // Our cache of screen data
             cachedScreenContents = .init(duration: .milliseconds(500)) { [weak self] in
@@ -364,11 +320,6 @@ extension Ghostty {
                 object: self)
             center.addObserver(
                 self,
-                selector: #selector(ghosttyDidChangeReadonly(_:)),
-                name: .ghosttyDidChangeReadonly,
-                object: self)
-            center.addObserver(
-                self,
                 selector: #selector(windowDidChangeScreen),
                 name: NSWindow.didChangeScreenNotification,
                 object: nil)
@@ -438,7 +389,12 @@ extension Ghostty {
             progressReportTimer?.invalidate()
         }
 
-        func focusDidChange(_ focused: Bool) {
+        override func endSearch() {
+            Ghostty.moveFocus(to: self)
+            super.endSearch()
+        }
+
+        override func focusDidChange(_ focused: Bool) {
             guard let surface = self.surface else { return }
             guard self.focused != focused else { return }
             self.focused = focused
@@ -475,7 +431,7 @@ extension Ghostty {
             }
         }
 
-        func sizeDidChange(_ size: CGSize) {
+        override func sizeDidChange(_ size: CGSize) {
             // Ghostty wants to know the actual framebuffer size... It is very important
             // here that we use "size" and NOT the view frame. If we're in the middle of
             // an animation (i.e. a fullscreen animation), the frame will not yet be updated.
@@ -660,20 +616,17 @@ extension Ghostty {
                 return event
             }
 
-            guard searchState == nil else {
-                // We don't want to process events that
-                // are supposed to be handled by SearchOverlay
-                // When clicking outside, SurfaceView will become first responder automatically
-                return event
-            }
-
             // We only want to process events that are on this window.
             guard let window,
                   event.window != nil,
                   window == event.window else { return event }
 
             // The clicked location in this window should be this view.
-            let location = convert(event.locationInWindow, from: nil)
+            guard
+                let location = window.contentView?.convert(event.locationInWindow, from: nil)
+            else {
+                return event
+            }
             // We should use window to perform hitTest here,
             // because there could be some other overlays on top, like search bar
             guard window.contentView?.hitTest(location) == self else { return event }
@@ -790,11 +743,6 @@ extension Ghostty {
         @objc private func ghosttyBellDidRing(_ notification: SwiftUI.Notification) {
             // Bell state goes to true
             bell = true
-        }
-
-        @objc private func ghosttyDidChangeReadonly(_ notification: SwiftUI.Notification) {
-            guard let value = notification.userInfo?[SwiftUI.Notification.Name.ReadonlyKey] as? Bool else { return }
-            readonly = value
         }
 
         @objc private func windowDidChangeScreen(notification: SwiftUI.Notification) {
@@ -1182,6 +1130,32 @@ extension Ghostty {
             // we control the preedit state only through the preedit API.
             syncPreedit(clearIfNeeded: markedTextBefore)
 
+            // Korean IMEs on macOS may commit preedit text via insertText
+            // while handling an arrow key. Send that committed text separately
+            // before replaying arrow movement, except for plain left-arrow
+            // where AppKit already leaves the caret in place.
+            if markedTextBefore,
+               markedText.length == 0,
+               let list = keyTextAccumulator,
+               list.count > 0,
+               let preeditCommitArrow = preeditCommitArrowKey(translationEvent) {
+                for text in list {
+                    _ = committedPreeditTextAction(action, text: text)
+                }
+
+                let isPlainLeftArrow = preeditCommitArrow == .arrowLeft &&
+                    event.modifierFlags.isDisjoint(with: [.shift, .control, .option, .command])
+                if !isPlainLeftArrow {
+                    _ = keyAction(
+                        action,
+                        event: event,
+                        translationEvent: translationEvent,
+                        composing: false
+                    )
+                }
+                return
+            }
+
             if let list = keyTextAccumulator, list.count > 0 {
                 // If we have text, then we've composed a character, send that down.
                 // These never have "composing" set to true because these are the
@@ -1442,6 +1416,37 @@ extension Ghostty {
             }
         }
 
+        private func preeditCommitArrowKey(_ event: NSEvent) -> Ghostty.Input.Key? {
+            guard let key = Ghostty.Input.Key(keyCode: event.keyCode) else { return nil }
+            switch key {
+            case .arrowDown, .arrowLeft, .arrowRight, .arrowUp:
+                return key
+            default:
+                return nil
+            }
+        }
+
+        private func committedPreeditTextAction(
+            _ action: ghostty_input_action_e,
+            text: String
+        ) -> Bool {
+            guard let surface = self.surface else { return false }
+
+            var key_ev = ghostty_input_key_s()
+            key_ev.action = action
+            key_ev.keycode = 0
+            key_ev.text = nil
+            key_ev.composing = false
+            key_ev.mods = GHOSTTY_MODS_NONE
+            key_ev.consumed_mods = GHOSTTY_MODS_NONE
+            key_ev.unshifted_codepoint = 0
+
+            return text.withCString { ptr in
+                key_ev.text = ptr
+                return ghostty_surface_key(surface, key_ev)
+            }
+        }
+
         override func quickLook(with event: NSEvent) {
             guard let surface = self.surface else { return super.quickLook(with: event) }
 
@@ -1611,19 +1616,11 @@ extension Ghostty {
         }
 
         @IBAction func findNext(_ sender: Any?) {
-            guard let surface = self.surface else { return }
-            let action = "search:next"
-            if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
-                AppDelegate.logger.warning("action failed action=\(action)")
-            }
+            _ = self.navigateSearchToNext()
         }
 
         @IBAction func findPrevious(_ sender: Any?) {
-            guard let surface = self.surface else { return }
-            let action = "search:previous"
-            if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
-                AppDelegate.logger.warning("action failed action=\(action)")
-            }
+            _ = navigateSearchToPrevious()
         }
 
         @IBAction func findHide(_ sender: Any?) {
@@ -1639,14 +1636,6 @@ extension Ghostty {
             let action = "toggle_readonly"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 AppDelegate.logger.warning("action failed action=\(action)")
-            }
-        }
-
-        /// Triggers a brief highlight animation on this surface.
-        func highlight() {
-            highlighted = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                self?.highlighted = false
             }
         }
 
@@ -2014,21 +2003,7 @@ extension Ghostty.SurfaceView: NSTextInputClient {
            let current = NSApp.currentEvent,
            lastPerformKeyEvent == current.timestamp {
             NSApp.sendEvent(current)
-            return
         }
-
-		guard let surfaceModel else { return }
-        // Process MacOS native scroll events
-        switch selector {
-        case #selector(moveToBeginningOfDocument(_:)):
-            _ = surfaceModel.perform(action: "scroll_to_top")
-        case #selector(moveToEndOfDocument(_:)):
-            _ = surfaceModel.perform(action: "scroll_to_bottom")
-        default:
-            break
-        }
-
-        print("SEL: \(selector)")
     }
 
     /// Sync the preedit state based on the markedText value to libghostty

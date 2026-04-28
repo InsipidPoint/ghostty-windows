@@ -1736,11 +1736,11 @@ pub const Application = extern struct {
                 log.debug("new-window argument: {d} {s}", .{ i, str });
 
                 if (e_seen) {
-                    const cpy = alloc.dupeZ(u8, str) catch |err| {
+                    const duplicated = alloc.dupeZ(u8, str) catch |err| {
                         log.warn("unable to duplicate argument {d} {s}: {t}", .{ i, str, err });
                         break :overrides;
                     };
-                    args.append(alloc, cpy) catch |err| {
+                    args.append(alloc, duplicated) catch |err| {
                         log.warn("unable to append argument {d} {s}: {t}", .{ i, str, err });
                         break :overrides;
                     };
@@ -1811,29 +1811,18 @@ pub const Application = extern struct {
         const t = glib.ext.VariantType.newFor(u64);
         defer glib.VariantType.free(t);
 
-        // Make sure that we've receiived a u64 from the system.
+        // Make sure that we've received a u64 from the system.
         if (glib.Variant.isOfType(parameter, t) == 0) {
             return;
         }
 
-        // Convert that u64 to pointer to a core surface. A value of zero
-        // means that there was no target surface for the notification so
-        // we don't focus any surface.
-        //
-        // This is admittedly SUPER SUS and we should instead do what we
-        // do on macOS which is generate a UUID per surface and then pass
-        // that around. But, we do validate the pointer below so at worst
-        // this may result in focusing the wrong surface if the pointer was
-        // reused for a surface.
-        const ptr_int = parameter.getUint64();
-        if (ptr_int == 0) return;
-        const surface: *CoreSurface = @ptrFromInt(ptr_int);
+        // Convert the u64 to a core surface by using it as a surface ID.
+        // A value of zero means that there was no target surface for the
+        // notification so we don't focus any surface.
+        const surface_id = parameter.getUint64();
+        if (surface_id == 0) return;
+        const surface = self.core().findSurfaceByID(surface_id) orelse return;
 
-        // Send a message through the core app mailbox rather than presenting the
-        // surface directly so that it can validate that the surface pointer is
-        // valid. We could get an invalid pointer if a desktop notification outlives
-        // a Ghostty instance and a new one starts up, or there are multiple Ghostty
-        // instances running.
         _ = self.core().mailbox.push(
             .{
                 .surface_message = .{
@@ -2462,7 +2451,7 @@ const Action = struct {
         };
         defer config.unref();
 
-        // Update the proper target. This will trigger a `confige_change`
+        // Update the proper target. This will trigger a `config_change`
         // apprt action which will propagate the config properly to our
         // property system.
         switch (target) {

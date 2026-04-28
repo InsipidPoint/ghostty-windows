@@ -76,7 +76,6 @@
         .opengl = .{ .path = "./pkg/opengl", .lazy = true },
         .sentry = .{ .path = "./pkg/sentry", .lazy = true },
         .simdutf = .{ .path = "./pkg/simdutf", .lazy = true },
-        .utfcpp = .{ .path = "./pkg/utfcpp", .lazy = true },
         .wuffs = .{ .path = "./pkg/wuffs", .lazy = true },
         .zlib = .{ .path = "./pkg/zlib", .lazy = true },
 

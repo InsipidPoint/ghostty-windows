@@ -1,12 +1,15 @@
 const std = @import("std");
 const testing = std.testing;
+const build_options = @import("terminal_options");
 const lib = @import("../lib.zig");
 const CAllocator = lib.alloc.Allocator;
 const ZigTerminal = @import("../Terminal.zig");
 const Stream = @import("../stream_terminal.zig").Stream;
 const ScreenSet = @import("../ScreenSet.zig");
 const PageList = @import("../PageList.zig");
+const apc = @import("../apc.zig");
 const kitty = @import("../kitty/key.zig");
+const kitty_gfx_c = @import("kitty_graphics.zig");
 const modes = @import("../modes.zig");
 const point = @import("../point.zig");
 const size = @import("../size.zig");
@@ -304,6 +307,12 @@ pub const Option = enum(c_int) {
     color_background = 12,
     color_cursor = 13,
     color_palette = 14,
+    kitty_image_storage_limit = 15,
+    kitty_image_medium_file = 16,
+    kitty_image_medium_temp_file = 17,
+    kitty_image_medium_shared_mem = 18,
+    apc_max_bytes = 19,
+    apc_max_bytes_kitty = 20,
 
     /// Input type expected for setting the option.
     pub fn InType(comptime self: Option) type {
@@ -320,6 +329,12 @@ pub const Option = enum(c_int) {
             .title, .pwd => ?*const lib.String,
             .color_foreground, .color_background, .color_cursor => ?*const color.RGB.C,
             .color_palette => ?*const color.PaletteC,
+            .kitty_image_storage_limit => ?*const u64,
+            .kitty_image_medium_file,
+            .kitty_image_medium_temp_file,
+            .kitty_image_medium_shared_mem,
+            => ?*const bool,
+            .apc_max_bytes, .apc_max_bytes_kitty => ?*const usize,
         };
     }
 };
@@ -388,9 +403,51 @@ fn setTyped(
             );
             wrapper.terminal.flags.dirty.palette = true;
         },
+        .kitty_image_storage_limit => {
+            if (comptime !build_options.kitty_graphics) return .success;
+            const limit: usize = if (value) |v| @intCast(v.*) else 0;
+            var it = wrapper.terminal.screens.all.iterator();
+            while (it.next()) |entry| {
+                const screen = entry.value.*;
+                screen.kitty_images.setLimit(screen.alloc, screen, limit) catch return .out_of_memory;
+            }
+        },
+        .kitty_image_medium_file,
+        .kitty_image_medium_temp_file,
+        .kitty_image_medium_shared_mem,
+        => {
+            if (comptime !build_options.kitty_graphics) return .success;
+            const val = (value orelse return .success).*;
+            var it = wrapper.terminal.screens.all.iterator();
+            while (it.next()) |entry| {
+                const screen = entry.value.*;
+                switch (option) {
+                    .kitty_image_medium_file => screen.kitty_images.image_limits.file = val,
+                    .kitty_image_medium_temp_file => screen.kitty_images.image_limits.temporary_file = val,
+                    .kitty_image_medium_shared_mem => screen.kitty_images.image_limits.shared_memory = val,
+                    else => unreachable,
+                }
+            }
+        },
+        .apc_max_bytes => {
+            wrapper.stream.handler.apc_handler.max_bytes = if (value) |ptr|
+                .initFull(ptr.*)
+            else
+                .{};
+        },
+        .apc_max_bytes_kitty => {
+            if (value) |ptr| {
+                wrapper.stream.handler.apc_handler.max_bytes.put(.kitty, ptr.*);
+            } else {
+                wrapper.stream.handler.apc_handler.max_bytes.remove(.kitty);
+            }
+        },
     }
     return .success;
 }
+
+/// C: GhosttyDeviceAttributes
+pub const DeviceAttributes = Effects.CDeviceAttributes;
 
 /// C: GhosttyTerminalScrollViewport
 pub const ScrollViewport = ZigTerminal.ScrollViewport.C;
@@ -476,6 +533,9 @@ pub fn mode_set(
     return .success;
 }
 
+/// C: GhosttyKittyGraphics
+pub const KittyGraphics = kitty_gfx_c.KittyGraphics;
+
 /// C: GhosttyTerminalScreen
 pub const TerminalScreen = ScreenSet.Key;
 
@@ -510,6 +570,11 @@ pub const TerminalData = enum(c_int) {
     color_background_default = 23,
     color_cursor_default = 24,
     color_palette_default = 25,
+    kitty_image_storage_limit = 26,
+    kitty_image_medium_file = 27,
+    kitty_image_medium_temp_file = 28,
+    kitty_image_medium_shared_mem = 29,
+    kitty_graphics = 30,
 
     /// Output type expected for querying the data of the given kind.
     pub fn OutType(comptime self: TerminalData) type {
@@ -532,6 +597,12 @@ pub const TerminalData = enum(c_int) {
             .color_cursor_default,
             => color.RGB.C,
             .color_palette, .color_palette_default => color.PaletteC,
+            .kitty_image_storage_limit => u64,
+            .kitty_image_medium_file,
+            .kitty_image_medium_temp_file,
+            .kitty_image_medium_shared_mem,
+            => bool,
+            .kitty_graphics => KittyGraphics,
         };
     }
 };
@@ -556,6 +627,27 @@ pub fn get(
             @ptrCast(@alignCast(out)),
         ),
     };
+}
+
+pub fn get_multi(
+    terminal_: Terminal,
+    count: usize,
+    keys: ?[*]const TerminalData,
+    values: ?[*]?*anyopaque,
+    out_written: ?*usize,
+) callconv(lib.calling_conv) Result {
+    const k = keys orelse return .invalid_value;
+    const v = values orelse return .invalid_value;
+
+    for (0..count) |i| {
+        const result = get(terminal_, k[i], v[i]);
+        if (result != .success) {
+            if (out_written) |w| w.* = i;
+            return result;
+        }
+    }
+    if (out_written) |w| w.* = count;
+    return .success;
 }
 
 fn getTyped(
@@ -600,6 +692,26 @@ fn getTyped(
         .color_cursor_default => out.* = (t.colors.cursor.default orelse return .no_value).cval(),
         .color_palette => out.* = color.paletteCval(&t.colors.palette.current),
         .color_palette_default => out.* = color.paletteCval(&t.colors.palette.original),
+        .kitty_image_storage_limit => {
+            if (comptime !build_options.kitty_graphics) return .no_value;
+            out.* = @intCast(t.screens.active.kitty_images.total_limit);
+        },
+        .kitty_image_medium_file => {
+            if (comptime !build_options.kitty_graphics) return .no_value;
+            out.* = t.screens.active.kitty_images.image_limits.file;
+        },
+        .kitty_image_medium_temp_file => {
+            if (comptime !build_options.kitty_graphics) return .no_value;
+            out.* = t.screens.active.kitty_images.image_limits.temporary_file;
+        },
+        .kitty_image_medium_shared_mem => {
+            if (comptime !build_options.kitty_graphics) return .no_value;
+            out.* = t.screens.active.kitty_images.image_limits.shared_memory;
+        },
+        .kitty_graphics => {
+            if (comptime !build_options.kitty_graphics) return .no_value;
+            out.* = &t.screens.active.kitty_images;
+        },
     }
 
     return .success;
@@ -620,6 +732,20 @@ pub fn grid_ref(
     const p = t.screens.active.pages.pin(zig_pt) orelse
         return .invalid_value;
     if (out_ref) |out| out.* = grid_ref_c.CGridRef.fromPin(p);
+    return .success;
+}
+
+pub fn point_from_grid_ref(
+    terminal_: Terminal,
+    ref: *const grid_ref_c.CGridRef,
+    tag: point.Tag,
+    out: ?*point.Coordinate,
+) callconv(lib.calling_conv) Result {
+    const t: *ZigTerminal = (terminal_ orelse return .invalid_value).terminal;
+    const p = ref.toPin() orelse return .invalid_value;
+    const pt = t.screens.active.pages.pointFromPin(tag, p) orelse
+        return .no_value;
+    if (out) |o| o.* = pt.coord();
     return .success;
 }
 
@@ -1185,6 +1311,102 @@ test "grid_ref null terminal" {
         .tag = .active,
         .value = .{ .active = .{ .x = 0, .y = 0 } },
     }, &out_ref));
+}
+
+test "point_from_grid_ref roundtrip active" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 10_000 },
+    ));
+    defer free(t);
+
+    vt_write(t, "Hello", 5);
+
+    // Get a grid ref at (2, 0) in active coords
+    var ref: grid_ref_c.CGridRef = .{};
+    try testing.expectEqual(Result.success, grid_ref(t, .{
+        .tag = .active,
+        .value = .{ .active = .{ .x = 2, .y = 0 } },
+    }, &ref));
+
+    // Convert back to active coords
+    var coord: point.Coordinate = undefined;
+    try testing.expectEqual(Result.success, point_from_grid_ref(t, &ref, .active, &coord));
+    try testing.expectEqual(@as(size.CellCountInt, 2), coord.x);
+    try testing.expectEqual(@as(u32, 0), coord.y);
+}
+
+test "point_from_grid_ref roundtrip viewport" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 10_000 },
+    ));
+    defer free(t);
+
+    vt_write(t, "Hello", 5);
+
+    var ref: grid_ref_c.CGridRef = .{};
+    try testing.expectEqual(Result.success, grid_ref(t, .{
+        .tag = .viewport,
+        .value = .{ .viewport = .{ .x = 0, .y = 0 } },
+    }, &ref));
+
+    var coord: point.Coordinate = undefined;
+    try testing.expectEqual(Result.success, point_from_grid_ref(t, &ref, .viewport, &coord));
+    try testing.expectEqual(@as(size.CellCountInt, 0), coord.x);
+    try testing.expectEqual(@as(u32, 0), coord.y);
+}
+
+test "point_from_grid_ref history ref to active returns no_value" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{ .cols = 80, .rows = 4, .max_scrollback = 10_000 },
+    ));
+    defer free(t);
+
+    // Write enough lines to push content into scrollback
+    for (0..10) |_| {
+        vt_write(t, "line\n", 5);
+    }
+
+    // Get a ref to the first line (now in scrollback)
+    var ref: grid_ref_c.CGridRef = .{};
+    try testing.expectEqual(Result.success, grid_ref(t, .{
+        .tag = .screen,
+        .value = .{ .screen = .{ .x = 0, .y = 0 } },
+    }, &ref));
+
+    // Should succeed for screen coords
+    var coord: point.Coordinate = undefined;
+    try testing.expectEqual(Result.success, point_from_grid_ref(t, &ref, .screen, &coord));
+    try testing.expectEqual(@as(u32, 0), coord.y);
+
+    // Should fail for active coords (it's in scrollback)
+    try testing.expectEqual(Result.no_value, point_from_grid_ref(t, &ref, .active, &coord));
+}
+
+test "point_from_grid_ref null terminal" {
+    var ref: grid_ref_c.CGridRef = .{};
+    try testing.expectEqual(Result.invalid_value, point_from_grid_ref(null, &ref, .active, null));
+}
+
+test "point_from_grid_ref null node" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 0 },
+    ));
+    defer free(t);
+
+    const ref: grid_ref_c.CGridRef = .{};
+    try testing.expectEqual(Result.invalid_value, point_from_grid_ref(t, &ref, .active, null));
 }
 
 test "set write_pty callback" {
@@ -2352,4 +2574,50 @@ test "set color sets dirty flag" {
     const fg: color.RGB.C = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF };
     try testing.expectEqual(Result.success, set(t, .color_foreground, @ptrCast(&fg)));
     try testing.expect(zt.flags.dirty.palette);
+}
+
+test "get_multi success" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 0 },
+    ));
+    defer free(t);
+
+    var cols: u16 = 0;
+    var rows: u16 = 0;
+    var written: usize = 0;
+
+    const keys = [_]TerminalData{ .cols, .rows };
+    var values = [_]?*anyopaque{ @ptrCast(&cols), @ptrCast(&rows) };
+    try testing.expectEqual(Result.success, get_multi(t, keys.len, &keys, &values, &written));
+    try testing.expectEqual(keys.len, written);
+    try testing.expectEqual(80, cols);
+    try testing.expectEqual(24, rows);
+}
+
+test "get_multi error sets out_written" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 0 },
+    ));
+    defer free(t);
+
+    var cols: u16 = 0;
+    var written: usize = 99;
+
+    const keys = [_]TerminalData{ .cols, .invalid };
+    var values = [_]?*anyopaque{ @ptrCast(&cols), @ptrCast(&cols) };
+    try testing.expectEqual(Result.invalid_value, get_multi(t, keys.len, &keys, &values, &written));
+    try testing.expectEqual(1, written);
+    try testing.expectEqual(80, cols);
+}
+
+test "get_multi null keys returns invalid_value" {
+    var cols: u16 = 0;
+    var values = [_]?*anyopaque{@ptrCast(&cols)};
+    try testing.expectEqual(Result.invalid_value, get_multi(null, 1, null, &values, null));
 }

@@ -13,26 +13,6 @@
 #include <ghostty/vt/types.h>
 #include <ghostty/vt/allocator.h>
 
-/**
- * Opaque handle to an OSC parser instance.
- * 
- * This handle represents an OSC (Operating System Command) parser that can
- * be used to parse the contents of OSC sequences.
- *
- * @ingroup osc
- */
-typedef struct GhosttyOscParserImpl *GhosttyOscParser;
-
-/**
- * Opaque handle to a single OSC command.
- * 
- * This handle represents a parsed OSC (Operating System Command) command.
- * The command can be queried for its type and associated data.
- *
- * @ingroup osc
- */
-typedef struct GhosttyOscCommandImpl *GhosttyOscCommand;
-
 /** @defgroup osc OSC Parser
  *
  * OSC (Operating System Command) sequence parser and command handling.
@@ -59,7 +39,7 @@ typedef struct GhosttyOscCommandImpl *GhosttyOscCommand;
  *
  * @ingroup osc
  */
-typedef enum {
+typedef enum GHOSTTY_ENUM_TYPED {
   GHOSTTY_OSC_COMMAND_INVALID = 0,
   GHOSTTY_OSC_COMMAND_CHANGE_WINDOW_TITLE = 1,
   GHOSTTY_OSC_COMMAND_CHANGE_WINDOW_ICON = 2,
@@ -83,6 +63,7 @@ typedef enum {
   GHOSTTY_OSC_COMMAND_CONEMU_XTERM_EMULATION = 20,
   GHOSTTY_OSC_COMMAND_CONEMU_COMMENT = 21,
   GHOSTTY_OSC_COMMAND_KITTY_TEXT_SIZING = 22,
+  GHOSTTY_OSC_COMMAND_TYPE_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyOscCommandType;
 
 /**
@@ -93,7 +74,7 @@ typedef enum {
  *
  * @ingroup osc
  */
-typedef enum {
+typedef enum GHOSTTY_ENUM_TYPED {
   /** Invalid data type. Never results in any data extraction. */
   GHOSTTY_OSC_DATA_INVALID = 0,
   
@@ -108,6 +89,7 @@ typedef enum {
    * the same parser instance. Memory is owned by the parser.
    */
   GHOSTTY_OSC_DATA_CHANGE_WINDOW_TITLE_STR = 1,
+  GHOSTTY_OSC_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyOscCommandData;
 
 /**

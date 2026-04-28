@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
         .root = b.path("src"),
         .files = &.{"main.cpp"},
     });
+    exe_mod.link_libcpp = true;
 
     // You'll want to use a lazy dependency here so that ghostty is only
     // downloaded if you actually need it.

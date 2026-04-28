@@ -3,6 +3,8 @@ const testing = std.testing;
 const lib = @import("../lib.zig");
 const CAllocator = lib.alloc.Allocator;
 const terminal_c = @import("terminal.zig");
+const grid_ref = @import("grid_ref.zig");
+const selection_c = @import("selection.zig");
 const ZigTerminal = @import("../Terminal.zig");
 const formatterpkg = @import("../formatter.zig");
 const Result = @import("result.zig").Result;
@@ -22,6 +24,8 @@ pub const Formatter = ?*FormatterWrapper;
 
 /// C: GhosttyFormatterFormat
 pub const Format = formatterpkg.Format;
+
+const CSelection = selection_c.CSelection;
 
 /// C: GhosttyFormatterScreenOptions
 pub const ScreenOptions = extern struct {
@@ -62,6 +66,10 @@ pub const TerminalOptions = extern struct {
     unwrap: bool,
     trim: bool,
     extra: Extra,
+
+    /// Optional selection to restrict output to a range.
+    /// If null, the entire screen is formatted.
+    selection: ?*const CSelection = null,
 
     /// C: GhosttyFormatterTerminalExtra
     pub const Extra = extern struct {
@@ -137,6 +145,12 @@ fn terminal_new_(
         .trim = opts.trim,
     });
     formatter.extra = opts.extra.toZig();
+
+    // Setup the content that we're formatting
+    if (opts.selection) |sel| formatter.content = .{
+        .selection = sel.toZig() orelse
+            return error.InvalidValue,
+    };
 
     ptr.* = .{
         .kind = .{ .terminal = formatter },
@@ -387,6 +401,50 @@ test "format vt" {
     try testing.expectEqual(Result.success, format_buf(f, &buf, buf.len, &written));
     try testing.expect(written > 0);
     try testing.expect(std.mem.indexOf(u8, buf[0..written], "Test") != null);
+}
+
+test "format plain with selection" {
+    var t: terminal_c.Terminal = null;
+    try testing.expectEqual(Result.success, terminal_c.new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 10_000 },
+    ));
+    defer terminal_c.free(t);
+
+    terminal_c.vt_write(t, "Hello World", 11);
+
+    // Get grid refs for "World" (columns 6..10 on row 0)
+    var start_ref: grid_ref.CGridRef = .{};
+    try testing.expectEqual(Result.success, terminal_c.grid_ref(t, .{
+        .tag = .active,
+        .value = .{ .active = .{ .x = 6, .y = 0 } },
+    }, &start_ref));
+
+    var end_ref: grid_ref.CGridRef = .{};
+    try testing.expectEqual(Result.success, terminal_c.grid_ref(t, .{
+        .tag = .active,
+        .value = .{ .active = .{ .x = 10, .y = 0 } },
+    }, &end_ref));
+
+    const sel: selection_c.CSelection = .{
+        .start = start_ref,
+        .end = end_ref,
+    };
+
+    var f: Formatter = null;
+    try testing.expectEqual(Result.success, terminal_new(
+        &lib.alloc.test_allocator,
+        &f,
+        t,
+        .{ .emit = .plain, .unwrap = false, .trim = true, .selection = &sel, .extra = .{ .palette = false, .modes = false, .scrolling_region = false, .tabstops = false, .pwd = false, .keyboard = false, .screen = .{ .cursor = false, .style = false, .hyperlink = false, .protection = false, .kitty_keyboard = false, .charsets = false } } },
+    ));
+    defer free(f);
+
+    var buf: [1024]u8 = undefined;
+    var written: usize = 0;
+    try testing.expectEqual(Result.success, format_buf(f, &buf, buf.len, &written));
+    try testing.expectEqualStrings("World", buf[0..written]);
 }
 
 test "format html" {

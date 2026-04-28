@@ -1,5 +1,7 @@
 const std = @import("std");
+const build_options = @import("terminal_options");
 const testing = std.testing;
+const apc = @import("apc.zig");
 const csi = @import("csi.zig");
 const device_attributes = @import("device_attributes.zig");
 const device_status = @import("device_status.zig");
@@ -34,6 +36,12 @@ pub const Handler = struct {
     /// but they allow for the handler to trigger or query external
     /// effects.
     effects: Effects = .readonly,
+
+    /// The APC command handler maintains the APC state. APC is like
+    /// CSI or OSC, but it is a private escape sequence that is used
+    /// to send commands to the terminal emulator. This is used by
+    /// the kitty graphics protocol.
+    apc_handler: apc.Handler = .{},
 
     pub const Effects = struct {
         /// Called when the terminal needs to write data back to the pty,
@@ -98,9 +106,7 @@ pub const Handler = struct {
     }
 
     pub fn deinit(self: *Handler) void {
-        // Currently does nothing but may in the future so callers should
-        // call this.
-        _ = self;
+        self.apc_handler.deinit();
     }
 
     pub fn vt(
@@ -230,6 +236,11 @@ pub const Handler = struct {
             .color_operation => try self.colorOperation(value.op, &value.requests),
             .kitty_color_report => try self.kittyColorOperation(value),
 
+            // APC
+            .apc_start => self.apc_handler.start(),
+            .apc_put => self.apc_handler.feed(self.terminal.gpa(), value),
+            .apc_end => self.apcEnd(),
+
             // Effect-based handlers
             .bell => self.bell(),
             .device_attributes => self.reportDeviceAttributes(value),
@@ -247,13 +258,6 @@ pub const Handler = struct {
             .dcs_hook,
             .dcs_put,
             .dcs_unhook,
-            => {},
-
-            // APC can modify terminal state (Kitty graphics) but we don't
-            // currently support it in the readonly stream.
-            .apc_start,
-            .apc_end,
-            .apc_put,
             => {},
 
             // Have no terminal-modifying effect
@@ -648,6 +652,33 @@ pub const Handler = struct {
                 },
                 .query => {},
             }
+        }
+    }
+
+    fn apcEnd(self: *Handler) void {
+        const alloc = self.terminal.gpa();
+        var cmd = self.apc_handler.end() orelse return;
+        defer cmd.deinit(alloc);
+
+        switch (cmd) {
+            .kitty => |*kitty_cmd| if (comptime build_options.kitty_graphics) {
+                if (self.terminal.kittyGraphics(
+                    alloc,
+                    kitty_cmd,
+                )) |resp| resp: {
+                    // Don't waste time encoding if we can't write responses
+                    // anyways.
+                    if (self.effects.write_pty == null) break :resp;
+
+                    // Encode and write the response if we have one.
+                    var buf: [1024]u8 = undefined;
+                    var writer: std.Io.Writer = .fixed(&buf);
+                    resp.encode(&writer) catch return;
+                    writer.writeByte(0) catch return;
+                    const final = writer.buffered();
+                    if (final.len > 3) self.writePty(final[0 .. final.len - 1 :0]);
+                }
+            },
         }
     }
 };
@@ -2068,4 +2099,53 @@ test "device attributes: custom response" {
 
     s.nextSlice("\x1B[>c");
     try testing.expectEqualStrings("\x1b[>41;100;0c", S.written.?);
+}
+
+test "kitty graphics APC response" {
+    if (comptime !build_options.kitty_graphics) return error.SkipZigTest;
+
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var written: ?[]const u8 = null;
+        fn writePty(_: *Handler, data: [:0]const u8) void {
+            if (written) |old| testing.allocator.free(old);
+            written = testing.allocator.dupe(u8, data) catch @panic("OOM");
+        }
+    };
+    S.written = null;
+    defer if (S.written) |old| testing.allocator.free(old);
+
+    var handler: Handler = .init(&t);
+    handler.effects.write_pty = &S.writePty;
+
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Send a kitty graphics transmit command with image id 1
+    s.nextSlice("\x1b_Ga=t,t=d,f=24,i=1,s=1,v=2,c=10,r=1;////////\x1b\\");
+
+    // Should have written a response back
+    try testing.expectEqualStrings("\x1b_Gi=1;OK\x1b\\", S.written.?);
+}
+
+test "kitty graphics via APC" {
+    if (comptime !build_options.kitty_graphics) return error.SkipZigTest;
+
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    const handler: Handler = .init(&t);
+    var s: Stream = .initAlloc(testing.allocator, handler);
+    defer s.deinit();
+
+    // Send a kitty graphics transmit command via APC:
+    // ESC _ G <payload> ESC \
+    // a=t,t=d,f=24,i=1,s=1,v=2,c=10,r=1;//////// (1x2 RGB direct)
+    s.nextSlice("\x1b_Ga=t,t=d,f=24,i=1,s=1,v=2,c=10,r=1;////////\x1b\\");
+
+    const storage = &t.screens.active.kitty_images;
+    const img = storage.imageById(1).?;
+    try testing.expectEqual(.rgb, img.format);
 }

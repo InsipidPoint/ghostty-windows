@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <ghostty/vt/allocator.h>
+#include <ghostty/vt/selection.h>
 #include <ghostty/vt/types.h>
 #include <ghostty/vt/terminal.h>
 
@@ -36,7 +37,7 @@ extern "C" {
  *
  * @ingroup formatter
  */
-typedef enum {
+typedef enum GHOSTTY_ENUM_TYPED {
   /** Plain text (no escape sequences). */
   GHOSTTY_FORMATTER_FORMAT_PLAIN,
 
@@ -45,6 +46,7 @@ typedef enum {
 
   /** HTML with inline styles. */
   GHOSTTY_FORMATTER_FORMAT_HTML,
+  GHOSTTY_FORMATTER_FORMAT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyFormatterFormat;
 
 /**
@@ -107,13 +109,6 @@ typedef struct {
 } GhosttyFormatterTerminalExtra;
 
 /**
- * Opaque handle to a formatter instance.
- *
- * @ingroup formatter
- */
-typedef struct GhosttyFormatterImpl* GhosttyFormatter;
-
-/**
  * Options for creating a terminal formatter.
  *
  * @ingroup formatter
@@ -133,6 +128,10 @@ typedef struct {
 
   /** Extra terminal state to include in styled output. */
   GhosttyFormatterTerminalExtra extra;
+
+  /** Optional selection to restrict output to a range.
+   *  If NULL, the entire screen is formatted. */
+  const GhosttySelection *selection;
 } GhosttyFormatterTerminalOptions;
 
 /**

@@ -220,4 +220,30 @@ struct ConfigTests {
         #expect(config.maximize == true)
         #expect(config.focusFollowsMouse == true)
     }
+
+    // MARK: - Keybind
+
+    @Test
+    func uppercasedLetterShouldBeNormalized() async throws {
+        let config = try TemporaryConfig("""
+        keybind=cmd+L=goto_split:left
+        """)
+        let shortcut = try #require(config.keyboardShortcut(for: "goto_split:left"))
+        #expect(shortcut == .init("l", modifiers: [.command]))
+
+        let config2 = try TemporaryConfig("""
+        keybind=cmd+Ä=goto_split:left
+        """)
+        let shortcut2 = try #require(config2.keyboardShortcut(for: "goto_split:left"))
+        #expect(shortcut2 == .init("ä", modifiers: [.command]))
+    }
+
+    @Test
+    func emptyConfigShouldBeHaveDefaultShortcut() async throws {
+        let config = try TemporaryConfig("")
+        let newWindow = try #require(config.keyboardShortcut(for: "new_window"))
+        #expect(newWindow == .init("n", modifiers: [.command]))
+        let gotoToNextSplit = try #require(config.keyboardShortcut(for: "goto_split:next"))
+        #expect(gotoToNextSplit == .init("]", modifiers: [.command]))
+    }
 }

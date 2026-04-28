@@ -6,6 +6,12 @@ pub const Backend = enum {
     /// FreeType for font rendering with no font discovery enabled.
     freetype,
 
+    /// FreeType for font rendering with a built-in Windows font directory
+    /// scanner (C:\Windows\Fonts + %LOCALAPPDATA%\Microsoft\Windows\Fonts).
+    /// Used when DirectWrite is not available; matches by family_name and
+    /// SFNT name table without any external index.
+    freetype_windows,
+
     /// Fontconfig for font discovery and FreeType for font rendering.
     fontconfig_freetype,
 
@@ -43,7 +49,9 @@ pub const Backend = enum {
         if (target.os.tag == .windows) {
             // Use freetype for rendering on Windows. Font discovery is
             // handled via DirectWrite in discovery.zig (see the .freetype
-            // + windows branch there).
+            // + windows branch there). The upstream .freetype_windows
+            // backend (a simple file-scanner) remains available for users
+            // who want to opt out of DirectWrite.
             return .freetype;
         }
 
@@ -60,6 +68,7 @@ pub const Backend = enum {
     pub fn hasFreetype(self: Backend) bool {
         return switch (self) {
             .freetype,
+            .freetype_windows,
             .fontconfig_freetype,
             .coretext_freetype,
             => true,
@@ -81,6 +90,7 @@ pub const Backend = enum {
             => true,
 
             .freetype,
+            .freetype_windows,
             .fontconfig_freetype,
             .web_canvas,
             => false,
@@ -92,6 +102,7 @@ pub const Backend = enum {
             .fontconfig_freetype => true,
 
             .freetype,
+            .freetype_windows,
             .coretext,
             .coretext_freetype,
             .coretext_harfbuzz,
@@ -104,6 +115,7 @@ pub const Backend = enum {
     pub fn hasHarfbuzz(self: Backend) bool {
         return switch (self) {
             .freetype,
+            .freetype_windows,
             .fontconfig_freetype,
             .coretext_freetype,
             .coretext_harfbuzz,

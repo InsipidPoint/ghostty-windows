@@ -6,9 +6,14 @@
 //! build structs without hardcoding byte offsets.
 const std = @import("std");
 const lib = @import("../lib.zig");
+const color = @import("../color.zig");
+const mouse_event = @import("mouse_event.zig");
+const point = @import("../point.zig");
+const size_report = @import("size_report.zig");
 
 const terminal = @import("terminal.zig");
 const formatter = @import("formatter.zig");
+const selection = @import("selection.zig");
 const render = @import("render.zig");
 const style_c = @import("style.zig");
 const mouse_encode = @import("mouse_encode.zig");
@@ -16,20 +21,33 @@ const grid_ref = @import("grid_ref.zig");
 
 /// All C API structs and their Ghostty C names.
 pub const structs: std.StaticStringMap(StructInfo) = .initComptime(.{
-    .{ "GhosttyTerminalOptions", StructInfo.init(terminal.Options) },
+    .{ "GhosttyColorRgb", StructInfo.init(color.RGB.C) },
+    .{ "GhosttyDeviceAttributes", StructInfo.init(terminal.DeviceAttributes) },
+    .{ "GhosttyDeviceAttributesPrimary", StructInfo.init(terminal.DeviceAttributes.Primary) },
+    .{ "GhosttyDeviceAttributesSecondary", StructInfo.init(terminal.DeviceAttributes.Secondary) },
+    .{ "GhosttyDeviceAttributesTertiary", StructInfo.init(terminal.DeviceAttributes.Tertiary) },
     .{ "GhosttyFormatterTerminalOptions", StructInfo.init(formatter.TerminalOptions) },
+    .{ "GhosttySelection", StructInfo.init(selection.CSelection) },
     .{ "GhosttyFormatterTerminalExtra", StructInfo.init(formatter.TerminalOptions.Extra) },
     .{ "GhosttyFormatterScreenExtra", StructInfo.init(formatter.ScreenOptions.Extra) },
+    .{ "GhosttyGridRef", StructInfo.init(grid_ref.CGridRef) },
+    .{ "GhosttyMouseEncoderSize", StructInfo.init(mouse_encode.Size) },
+    .{ "GhosttyMousePosition", StructInfo.init(mouse_event.Position) },
+    .{ "GhosttyPoint", StructInfo.init(point.Point.C) },
+    .{ "GhosttyPointCoordinate", StructInfo.init(point.Coordinate) },
     .{ "GhosttyRenderStateColors", StructInfo.init(render.Colors) },
+    .{ "GhosttySizeReportSize", StructInfo.init(size_report.Size) },
+    .{ "GhosttyString", StructInfo.init(lib.String) },
     .{ "GhosttyStyle", StructInfo.init(style_c.Style) },
     .{ "GhosttyStyleColor", StructInfo.init(style_c.Color) },
-    .{ "GhosttyMouseEncoderSize", StructInfo.init(mouse_encode.Size) },
-    .{ "GhosttyGridRef", StructInfo.init(grid_ref.CGridRef) },
+    .{ "GhosttyTerminalOptions", StructInfo.init(terminal.Options) },
+    .{ "GhosttyTerminalScrollbar", StructInfo.init(terminal.TerminalScrollbar) },
+    .{ "GhosttyTerminalScrollViewport", StructInfo.init(terminal.ScrollViewport) },
 });
 
 /// The comptime-generated JSON string of all structs.
 pub const json: [:0]const u8 = json: {
-    @setEvalBranchQuota(50000);
+    @setEvalBranchQuota(100000);
     var counter: std.Io.Writer.Discarding = .init(&.{});
     jsonWriteAll(&counter.writer) catch unreachable;
 

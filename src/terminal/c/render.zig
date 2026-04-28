@@ -201,6 +201,27 @@ pub fn get(
     };
 }
 
+pub fn get_multi(
+    state_: RenderState,
+    count: usize,
+    keys: ?[*]const Data,
+    values: ?[*]?*anyopaque,
+    out_written: ?*usize,
+) callconv(lib.calling_conv) Result {
+    const k = keys orelse return .invalid_value;
+    const v = values orelse return .invalid_value;
+
+    for (0..count) |i| {
+        const result = get(state_, k[i], v[i]);
+        if (result != .success) {
+            if (out_written) |w| w.* = i;
+            return result;
+        }
+    }
+    if (out_written) |w| w.* = count;
+    return .success;
+}
+
 fn getTyped(
     state_: RenderState,
     comptime data: Data,
@@ -468,6 +489,27 @@ pub fn row_cells_get(
     };
 }
 
+pub fn row_cells_get_multi(
+    cells_: RowCells,
+    count: usize,
+    keys: ?[*]const RowCellsData,
+    values: ?[*]?*anyopaque,
+    out_written: ?*usize,
+) callconv(lib.calling_conv) Result {
+    const k = keys orelse return .invalid_value;
+    const v = values orelse return .invalid_value;
+
+    for (0..count) |i| {
+        const result = row_cells_get(cells_, k[i], v[i]);
+        if (result != .success) {
+            if (out_written) |w| w.* = i;
+            return result;
+        }
+    }
+    if (out_written) |w| w.* = count;
+    return .success;
+}
+
 fn rowCellsGetTyped(
     cells_: RowCells,
     comptime data: RowCellsData,
@@ -566,6 +608,27 @@ pub fn row_get(
             @ptrCast(@alignCast(out)),
         ),
     };
+}
+
+pub fn row_get_multi(
+    iterator_: RowIterator,
+    count: usize,
+    keys: ?[*]const RowData,
+    values: ?[*]?*anyopaque,
+    out_written: ?*usize,
+) callconv(lib.calling_conv) Result {
+    const k = keys orelse return .invalid_value;
+    const v = values orelse return .invalid_value;
+
+    for (0..count) |i| {
+        const result = row_get(iterator_, k[i], v[i]);
+        if (result != .success) {
+            if (out_written) |w| w.* = i;
+            return result;
+        }
+    }
+    if (out_written) |w| w.* = count;
+    return .success;
 }
 
 fn rowGetTyped(
@@ -1379,4 +1442,138 @@ test "render: colors get supports truncated sized struct" {
     try testing.expectEqual(state_colors.palette[0].cval(), colors.palette[0]);
     try testing.expectEqual(state_colors.palette[1].cval(), colors.palette[1]);
     try testing.expectEqual(sentinel, colors.palette[2]);
+}
+
+test "render: get_multi success" {
+    var terminal: terminal_c.Terminal = null;
+    try testing.expectEqual(Result.success, terminal_c.new(
+        &lib.alloc.test_allocator,
+        &terminal,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 10_000 },
+    ));
+    defer terminal_c.free(terminal);
+
+    var state: RenderState = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &state,
+    ));
+    defer free(state);
+
+    try testing.expectEqual(Result.success, update(state, terminal));
+
+    var cols: u16 = 0;
+    var rows: u16 = 0;
+    var written: usize = 0;
+
+    const keys = [_]Data{ .cols, .rows };
+    var values = [_]?*anyopaque{ @ptrCast(&cols), @ptrCast(&rows) };
+    try testing.expectEqual(Result.success, get_multi(state, keys.len, &keys, &values, &written));
+    try testing.expectEqual(keys.len, written);
+    try testing.expectEqual(80, cols);
+    try testing.expectEqual(24, rows);
+}
+
+test "render: get_multi null returns invalid_value" {
+    var cols: u16 = 0;
+    var values = [_]?*anyopaque{@ptrCast(&cols)};
+    try testing.expectEqual(Result.invalid_value, get_multi(null, 1, null, &values, null));
+}
+
+test "render: row_get_multi success" {
+    var terminal: terminal_c.Terminal = null;
+    try testing.expectEqual(Result.success, terminal_c.new(
+        &lib.alloc.test_allocator,
+        &terminal,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 10_000 },
+    ));
+    defer terminal_c.free(terminal);
+
+    var state: RenderState = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &state,
+    ));
+    defer free(state);
+
+    try testing.expectEqual(Result.success, update(state, terminal));
+
+    var it: RowIterator = null;
+    try testing.expectEqual(Result.success, row_iterator_new(
+        &lib.alloc.test_allocator,
+        &it,
+    ));
+    defer row_iterator_free(it);
+
+    try testing.expectEqual(Result.success, get(state, .row_iterator, @ptrCast(&it)));
+    try testing.expect(row_iterator_next(it));
+
+    var dirty: bool = true;
+    var written: usize = 0;
+
+    const keys = [_]RowData{.dirty};
+    var values = [_]?*anyopaque{@ptrCast(&dirty)};
+    try testing.expectEqual(Result.success, row_get_multi(it, keys.len, &keys, &values, &written));
+    try testing.expectEqual(keys.len, written);
+}
+
+test "render: row_get_multi null returns invalid_value" {
+    var dirty: bool = false;
+    var values = [_]?*anyopaque{@ptrCast(&dirty)};
+    try testing.expectEqual(Result.invalid_value, row_get_multi(null, 1, null, &values, null));
+}
+
+test "render: row_cells_get_multi success" {
+    var terminal: terminal_c.Terminal = null;
+    try testing.expectEqual(Result.success, terminal_c.new(
+        &lib.alloc.test_allocator,
+        &terminal,
+        .{ .cols = 80, .rows = 24, .max_scrollback = 10_000 },
+    ));
+    defer terminal_c.free(terminal);
+
+    terminal_c.vt_write(terminal, "A", 1);
+
+    var state: RenderState = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &state,
+    ));
+    defer free(state);
+
+    try testing.expectEqual(Result.success, update(state, terminal));
+
+    var it: RowIterator = null;
+    try testing.expectEqual(Result.success, row_iterator_new(
+        &lib.alloc.test_allocator,
+        &it,
+    ));
+    defer row_iterator_free(it);
+
+    try testing.expectEqual(Result.success, get(state, .row_iterator, @ptrCast(&it)));
+    try testing.expect(row_iterator_next(it));
+
+    var cells: RowCells = null;
+    try testing.expectEqual(Result.success, row_cells_new(
+        &lib.alloc.test_allocator,
+        &cells,
+    ));
+    defer row_cells_free(cells);
+
+    try testing.expectEqual(Result.success, row_get(it, .cells, @ptrCast(&cells)));
+    try testing.expect(row_cells_next(cells));
+
+    var raw: row.CRow = undefined;
+    var written: usize = 0;
+
+    const keys = [_]RowCellsData{.raw};
+    var values = [_]?*anyopaque{@ptrCast(&raw)};
+    try testing.expectEqual(Result.success, row_cells_get_multi(cells, keys.len, &keys, &values, &written));
+    try testing.expectEqual(keys.len, written);
+}
+
+test "render: row_cells_get_multi null returns invalid_value" {
+    var raw: row.CRow = undefined;
+    var values = [_]?*anyopaque{@ptrCast(&raw)};
+    try testing.expectEqual(Result.invalid_value, row_cells_get_multi(null, 1, null, &values, null));
 }
