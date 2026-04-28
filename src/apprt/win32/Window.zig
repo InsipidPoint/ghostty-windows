@@ -96,6 +96,13 @@ drag_split_handle: SplitTree(Surface).Node.Handle = .root,
 drag_split_layout: SplitTree(Surface).Split.Layout = .horizontal,
 drag_start_rect: w32.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
 
+/// True after the last tab has been closed and WM_CLOSE has been posted.
+/// Input handlers must bail when this is set — between PostMessage(WM_CLOSE)
+/// and the dispatch, queued mouse/keyboard messages can otherwise reach
+/// handlers that allocate into a window about to be freed (e.g. the
+/// new-tab "+" button calling addTab()).
+closing: bool = false,
+
 pub const InitOptions = struct {
     is_quick_terminal: bool = false,
 };
@@ -262,6 +269,7 @@ fn findHandle(self: *Window, tab_idx: usize, surface: *Surface) ?SplitTree(Surfa
 /// Add a new tab surface to this window. The surface is created,
 /// initialized, and inserted at the position dictated by config.
 pub fn addTab(self: *Window) !*Surface {
+    if (self.closing) return error.WindowClosing;
     if (self.tab_count >= MAX_TABS) return error.TooManyTabs;
     self.cancelTabRename();
 
@@ -345,6 +353,7 @@ fn closeTabByIndex(self: *Window, idx: usize) void {
     }
     self.tab_count -= 1;
     if (self.tab_count == 0) {
+        self.closing = true;
         if (self.hwnd) |hwnd| _ = w32.PostMessageW(hwnd, w32.WM_CLOSE, 0, 0);
         return;
     }
@@ -1514,9 +1523,13 @@ pub fn close(self: *Window) void {
 
 /// Deinit and free all tab trees (which unrefs and frees surfaces).
 fn cleanupAllSurfaces(self: *Window) void {
-    for (0..self.tab_count) |i| {
-        var tree = self.tab_trees[i];
+    // Deinit in place and reset to .empty. SplitTree.deinit sets self.*
+    // to undefined; deinit'ing a local copy would only mark the copy,
+    // leaving stale arena/node pointers in tab_trees that any post-WM_CLOSE
+    // message walking the slot could dereference.
+    for (self.tab_trees[0..self.tab_count]) |*tree| {
         tree.deinit();
+        tree.* = .empty;
     }
     self.tab_count = 0;
 }
@@ -1578,6 +1591,31 @@ pub fn windowWndProc(
         @ptrFromInt(@as(usize, @bitCast(userdata)))
     else
         return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+
+    // Once the last tab is closed and WM_CLOSE has been posted, drop any
+    // input messages still queued for this window. They could otherwise
+    // mutate state (allocate, capture mouse, start drags) on a window
+    // about to be destroyed. WM_CLOSE/WM_DESTROY/paint/size still flow
+    // through so close itself can complete cleanly.
+    if (window.closing) switch (msg) {
+        w32.WM_LBUTTONDOWN,
+        w32.WM_LBUTTONUP,
+        w32.WM_LBUTTONDBLCLK,
+        w32.WM_RBUTTONUP,
+        w32.WM_MBUTTONDOWN,
+        w32.WM_MOUSEMOVE,
+        w32.WM_MOUSELEAVE,
+        w32.WM_MOUSEWHEEL,
+        w32.WM_KEYDOWN,
+        w32.WM_KEYUP,
+        w32.WM_SYSKEYDOWN,
+        w32.WM_SYSKEYUP,
+        w32.WM_CHAR,
+        w32.WM_SETFOCUS,
+        w32.WM_SETCURSOR,
+        => return w32.DefWindowProcW(hwnd, msg, wparam, lparam),
+        else => {},
+    };
 
     switch (msg) {
         w32.WM_SIZE => {
