@@ -1115,6 +1115,7 @@ pub fn paintPalette(self: *Surface, hwnd: w32.HWND) void {
     const item_height: i32 = @intFromFloat(@round(PALETTE_ITEM_HEIGHT * s));
     const list_top: i32 = @intFromFloat(@round(PALETTE_LIST_TOP * s));
     const max_visible = @divTrunc(client_rect.bottom - list_top, item_height);
+    if (max_visible <= 0) return; // popup too small to render any items
 
     // Calculate scroll offset to keep selected item visible
     var scroll_offset: i32 = 0;
@@ -1539,7 +1540,12 @@ pub fn handleKeyEvent(self: *Surface, wparam: usize, lparam: isize, action: inpu
     if (actual_action == .press or actual_action == .repeat) {
         var keyboard_state: [256]u8 = undefined;
         if (w32.GetKeyboardState(&keyboard_state) != 0) {
-            const scancode: u32 = @intCast((lparam >> 16) & 0x1FF);
+            // Mask to 8 bits — bit 24 of lparam is the extended-key flag,
+            // not part of the scancode. Including it produced wrong
+            // ToUnicode translations for AltGr layouts (German, Polish,
+            // etc.) and arrow/numpad keys. Matches the parallel call in
+            // sendWin32InputEvent below.
+            const scancode: u32 = @intCast((lparam >> 16) & 0xFF);
             var utf16_buf: [4]u16 = undefined;
             const result = w32.ToUnicode(
                 @intCast(vk),
@@ -1702,6 +1708,8 @@ pub fn handleMouseWheel(self: *Surface, wparam: usize) void {
 /// show its default composition UI.
 pub fn handleImeStartComposition(self: *Surface) void {
     self.ime_composing = true;
+    // Drop any buffered high surrogate so it can't pair with IME output.
+    self.high_surrogate = 0;
     self.positionImeWindow();
 }
 
@@ -1726,8 +1734,11 @@ pub fn handleImeComposition(self: *Surface, lparam: isize) bool {
     // Query the length of the result string (in bytes).
     const byte_len = w32.ImmGetCompositionStringW(himc, w32.GCS_RESULTSTR, null, 0);
     if (byte_len <= 0) return false;
+    // The W variant always returns an even byte count, but reject odd
+    // values defensively rather than panicking via @divExact.
+    if (byte_len & 1 != 0) return false;
 
-    const u16_len: usize = @intCast(@divExact(byte_len, 2));
+    const u16_len: usize = @intCast(@divTrunc(byte_len, 2));
 
     // Stack buffer for typical IME results (up to 64 UTF-16 code units).
     var stack_buf: [64]u16 = undefined;
@@ -1735,7 +1746,8 @@ pub fn handleImeComposition(self: *Surface, lparam: isize) bool {
     if (u16_len <= stack_buf.len) {
         const got = w32.ImmGetCompositionStringW(himc, w32.GCS_RESULTSTR, &stack_buf, @intCast(byte_len));
         if (got <= 0) return false;
-        const actual_len: usize = @intCast(@divExact(got, 2));
+        if (got & 1 != 0) return false;
+        const actual_len: usize = @intCast(@divTrunc(got, 2));
         self.sendImeText(stack_buf[0..actual_len]);
     } else {
         // Unusual: very long composition. Allocate on the heap.
@@ -1744,7 +1756,8 @@ pub fn handleImeComposition(self: *Surface, lparam: isize) bool {
         defer alloc.free(buf);
         const got = w32.ImmGetCompositionStringW(himc, w32.GCS_RESULTSTR, buf.ptr, @intCast(byte_len));
         if (got <= 0) return false;
-        const actual_len: usize = @intCast(@divExact(got, 2));
+        if (got & 1 != 0) return false;
+        const actual_len: usize = @intCast(@divTrunc(got, 2));
         self.sendImeText(buf[0..actual_len]);
     }
 
@@ -1926,6 +1939,9 @@ pub fn signalFrameDrawn(self: *Surface) void {
 /// Handle WM_SETFOCUS / WM_KILLFOCUS.
 pub fn handleFocus(self: *Surface, focused: bool) void {
     if (!self.core_surface_ready) return;
+    // Drop any buffered high surrogate on focus loss — otherwise it
+    // would pair with the next character key when focus returns.
+    if (!focused) self.high_surrogate = 0;
     self.core_surface.focusCallback(focused) catch |err| {
         log.err("focus callback error: {}", .{err});
     };
