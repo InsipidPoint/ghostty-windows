@@ -30,3 +30,9 @@ glad.zip
 vgcore.*
 
 dist/windows/ghostty-windows-x64-*.zip
+
+# Claude Code session state (local only)
+.claude/
+
+# Zig 0.16+ package cache (lands here when build deps resolve outside .zig-cache)
+zig-pkg/
