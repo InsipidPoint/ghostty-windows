@@ -39,8 +39,11 @@ tab_bar_visible: bool = false,
 /// DPI scale factor (DPI / 96.0).
 scale: f32 = 1.0,
 
-/// Hit-test rectangles for each tab in the tab bar.
-tab_rects: [64]w32.RECT = undefined,
+/// Hit-test rectangles for each tab in the tab bar. Zero-initialized
+/// so input handlers that read it before the first paint (e.g., a
+/// synthetic WM_LBUTTONDOWN during startup) get a no-match instead of
+/// stack garbage.
+tab_rects: [64]w32.RECT = std.mem.zeroes([64]w32.RECT),
 
 /// Hit-test rectangle for the "+" (new tab) button.
 new_tab_rect: w32.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
@@ -822,7 +825,11 @@ pub fn selectTab(self: *Window, target: apprt.action.GotoTab) bool {
         .next => if (self.active_tab + 1 < self.tab_count) self.active_tab + 1 else 0,
         .last => self.tab_count - 1,
         _ => blk: {
-            const n: usize = @intCast(@intFromEnum(target));
+            // GotoTab carries a c_int; clamp non-negative before casting
+            // so a negative sentinel doesn't panic the @intCast.
+            const raw = @intFromEnum(target);
+            if (raw < 0) return false;
+            const n: usize = @intCast(raw);
             break :blk if (n < self.tab_count) n else return false;
         },
     };
@@ -1018,12 +1025,16 @@ fn paintTabBar(self: *Window) void {
             .bottom = bar_h,
         };
 
-        // Draw tab background.
+        // Draw tab background. CreateSolidBrush failures are rare (GDI
+        // handle exhaustion) and must NOT skip the loop body's geometry
+        // update at the bottom — `continue`ing would leave subsequent
+        // tabs sharing the same x position.
         if (is_active) {
             var tab_rect = w32.RECT{ .left = x, .top = 0, .right = x + this_tab_w, .bottom = bar_h };
-            const active_brush = w32.CreateSolidBrush(active_bg_color) orelse continue;
-            _ = w32.FillRect(mem_dc, &tab_rect, active_brush);
-            _ = w32.DeleteObject(@ptrCast(active_brush));
+            if (w32.CreateSolidBrush(active_bg_color)) |brush| {
+                _ = w32.FillRect(mem_dc, &tab_rect, brush);
+                _ = w32.DeleteObject(@ptrCast(brush));
+            }
 
             // Draw accent line at bottom.
             var accent_rect = w32.RECT{
@@ -1032,14 +1043,16 @@ fn paintTabBar(self: *Window) void {
                 .right = x + this_tab_w,
                 .bottom = bar_h,
             };
-            const accent_brush = w32.CreateSolidBrush(accent_color) orelse continue;
-            _ = w32.FillRect(mem_dc, &accent_rect, accent_brush);
-            _ = w32.DeleteObject(@ptrCast(accent_brush));
+            if (w32.CreateSolidBrush(accent_color)) |brush| {
+                _ = w32.FillRect(mem_dc, &accent_rect, brush);
+                _ = w32.DeleteObject(@ptrCast(brush));
+            }
         } else if (is_hovered) {
             var hover_rect = w32.RECT{ .left = x, .top = 0, .right = x + this_tab_w, .bottom = bar_h };
-            const hover_brush = w32.CreateSolidBrush(hover_color) orelse continue;
-            _ = w32.FillRect(mem_dc, &hover_rect, hover_brush);
-            _ = w32.DeleteObject(@ptrCast(hover_brush));
+            if (w32.CreateSolidBrush(hover_color)) |brush| {
+                _ = w32.FillRect(mem_dc, &hover_rect, brush);
+                _ = w32.DeleteObject(@ptrCast(brush));
+            }
         }
 
         // Draw tab title text.
@@ -1230,6 +1243,10 @@ fn handleTabBarClick(self: *Window, x: i16, y: i16) void {
 fn moveTabTo(self: *Window, from: usize, to: usize) void {
     if (from == to) return;
     if (from >= self.tab_count or to >= self.tab_count) return;
+
+    // Cancel any in-progress rename: the edit control's tab index
+    // would otherwise point at the wrong tab after the move.
+    self.cancelTabRename();
 
     // Save the source tab state
     const saved_tree = self.tab_trees[from];

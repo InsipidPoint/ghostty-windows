@@ -208,9 +208,10 @@ pub fn onWindowDestroyed(self: *QuickTerminal) void {
     const alloc = self.app.core_app.alloc;
     const app = self.app;
 
-    if (self.animating) {
-        _ = w32.KillTimer(app.msg_hwnd, ANIM_TIMER_ID);
-    }
+    // Kill the animation timer unconditionally — `self.animating` may
+    // be false but a stray WM_TIMER could already be queued. Once `self`
+    // is freed below, dispatching that timer would touch freed memory.
+    _ = w32.KillTimer(app.msg_hwnd, ANIM_TIMER_ID);
 
     alloc.destroy(self.window);
     app.quick_terminal = null;
