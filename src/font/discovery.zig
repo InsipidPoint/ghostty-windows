@@ -247,24 +247,33 @@ pub const Descriptor = struct {
 pub const DirectWrite = struct {
     const dw = @import("directwrite.zig");
 
-    factory: *dw.IDWriteFactory,
-    collection: *dw.IDWriteFontCollection,
+    // Optional so we can degrade gracefully when DirectWrite is
+    // unavailable (Wine, restricted SKUs, broken font cache). Earlier
+    // versions @panic'd here, killing the process at startup.
+    factory: ?*dw.IDWriteFactory,
+    collection: ?*dw.IDWriteFontCollection,
 
     pub fn init(lib: Library) DirectWrite {
         // Library is only used by the Windows file-scanner backend.
         _ = lib;
         var factory_ptr: ?*anyopaque = null;
         const hr = dw.DWriteCreateFactory(.shared, &dw.IID_IDWriteFactory, &factory_ptr);
-        if (hr != dw.S_OK or factory_ptr == null) @panic("Failed to create DirectWrite factory");
+        if (hr != dw.S_OK or factory_ptr == null) {
+            log.warn("DWriteCreateFactory failed (hr=0x{x}); font discovery disabled", .{@as(u32, @bitCast(hr))});
+            return .{ .factory = null, .collection = null };
+        }
         const factory: *dw.IDWriteFactory = @ptrCast(@alignCast(factory_ptr.?));
-        const collection = factory.getSystemFontCollection() catch
-            @panic("Failed to get system font collection");
+        const collection = factory.getSystemFontCollection() catch |err| {
+            log.warn("getSystemFontCollection failed ({}); font discovery disabled", .{err});
+            factory.release();
+            return .{ .factory = null, .collection = null };
+        };
         return .{ .factory = factory, .collection = collection };
     }
 
     pub fn deinit(self: *DirectWrite) void {
-        self.collection.release();
-        self.factory.release();
+        if (self.collection) |c| c.release();
+        if (self.factory) |f| f.release();
     }
 
     /// Discover fonts from a descriptor.
@@ -283,10 +292,14 @@ pub const DirectWrite = struct {
             results.deinit(alloc);
         }
 
-        if (desc.family) |family| {
-            try self.findFamily(alloc, family, desc, &results);
-        } else if (desc.codepoint > 0) {
-            try self.findByCodepoint(alloc, desc, &results);
+        // If init failed there's no collection to search; return an empty
+        // iterator. Callers fall back to bundled fonts.
+        if (self.collection != null) {
+            if (desc.family) |family| {
+                try self.findFamily(alloc, family, desc, &results);
+            } else if (desc.codepoint > 0) {
+                try self.findByCodepoint(alloc, desc, &results);
+            }
         }
 
         sortResults(desc, results.items);
@@ -315,13 +328,15 @@ pub const DirectWrite = struct {
         desc: Descriptor,
         results: *std.ArrayList(FontResult),
     ) !void {
+        const collection = self.collection orelse return;
+
         // Convert family name to UTF-16
         const family_utf16 = try dw.utf8ToUtf16Alloc(alloc, family);
         defer alloc.free(family_utf16);
 
-        const family_index = try self.collection.findFamilyName(family_utf16) orelse return;
+        const family_index = try collection.findFamilyName(family_utf16) orelse return;
 
-        const font_family = try self.collection.getFontFamily(family_index);
+        const font_family = try collection.getFontFamily(family_index);
         defer font_family.release();
 
         const font_count = font_family.getFontCount();
@@ -369,10 +384,11 @@ pub const DirectWrite = struct {
         desc: Descriptor,
         results: *std.ArrayList(FontResult),
     ) !void {
-        const family_count = self.collection.getFontFamilyCount();
+        const collection = self.collection orelse return;
+        const family_count = collection.getFontFamilyCount();
 
         for (0..family_count) |fi| {
-            const font_family = self.collection.getFontFamily(@intCast(fi)) catch continue;
+            const font_family = collection.getFontFamily(@intCast(fi)) catch continue;
             defer font_family.release();
 
             const font_count = font_family.getFontCount();
