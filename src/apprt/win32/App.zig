@@ -709,19 +709,29 @@ pub fn performAction(
                 .surface => |core_surface| {
                     const exit_code = value.exit_code;
                     if (exit_code != 0) {
-                        // Show a message box for abnormal exit
+                        // Show a message box including the actual exit code.
                         const hwnd_val = core_surface.rt_surface.parent_window.hwnd;
-                        var buf: [256]u16 = undefined;
-                        const msg_text = std.fmt.bufPrint(
-                            @as([]u8, @ptrCast(&buf)),
-                            "Process exited with code {}\x00",
+                        var utf8_buf: [128]u8 = undefined;
+                        const msg_utf8 = std.fmt.bufPrint(
+                            &utf8_buf,
+                            "The shell process exited with code {d}.",
                             .{exit_code},
-                        ) catch return true;
-                        _ = msg_text;
-                        // Use a simple wide string
+                        ) catch "The shell process exited unexpectedly.";
+
+                        var utf16_buf: [256]u16 = undefined;
+                        const utf16_len = std.unicode.utf8ToUtf16Le(&utf16_buf, msg_utf8) catch {
+                            _ = w32.MessageBoxW(
+                                hwnd_val,
+                                std.unicode.utf8ToUtf16LeStringLiteral("The shell process exited unexpectedly."),
+                                std.unicode.utf8ToUtf16LeStringLiteral("Ghostty"),
+                                w32.MB_ICONWARNING,
+                            );
+                            return true;
+                        };
+                        utf16_buf[utf16_len] = 0;
                         _ = w32.MessageBoxW(
                             hwnd_val,
-                            std.unicode.utf8ToUtf16LeStringLiteral("The shell process exited unexpectedly."),
+                            @ptrCast(&utf16_buf),
                             std.unicode.utf8ToUtf16LeStringLiteral("Ghostty"),
                             w32.MB_ICONWARNING,
                         );
@@ -1068,15 +1078,19 @@ fn keyToVk(key: @import("../../input/key.zig").Key) ?u32 {
 // Update Checker
 // -----------------------------------------------------------------------
 
-/// Windows release version. Bump this when creating a new release.
-/// Must match the tag format on GitHub (without the "v" prefix).
-const WIN_VERSION = "1.0.0";
-
 /// GitHub releases API URL for this fork.
 const UPDATE_URL = "https://api.github.com/repos/InsipidPoint/ghostty-windows/releases/latest";
 
 /// Custom message posted from the update thread to the message loop.
 const WM_APP_UPDATE_AVAILABLE: u32 = w32.WM_APP + 2;
+
+/// Tray icon and timer IDs for notifications. Distinct IDs mean the
+/// desktop and update balloons can coexist without one's auto-cleanup
+/// removing the other's icon.
+const NOTIF_DESKTOP_UID: u32 = 1;
+const NOTIF_DESKTOP_TIMER_ID: usize = 2;
+const NOTIF_UPDATE_UID: u32 = 2;
+const NOTIF_UPDATE_TIMER_ID: usize = 3;
 
 /// Start a background thread to check for updates.
 fn startUpdateCheck(self: *App) void {
@@ -1106,11 +1120,9 @@ fn updateCheckThread(app: *App) void {
         0;
     const latest_ver = latest[latest_start..latest_len];
 
-    // Parse both versions as semver for proper comparison
-    const current_sv = std.SemanticVersion.parse(WIN_VERSION) catch {
-        log.warn("failed to parse current version: {s}", .{WIN_VERSION});
-        return;
-    };
+    // Compare against the binary's own version (set by build.zig from
+    // either build.zig.zon or the win-v git tag at build time).
+    const current_sv = build_config.version;
     const latest_sv = std.SemanticVersion.parse(latest_ver) catch {
         log.debug("failed to parse remote version: {s}", .{latest_ver});
         return;
@@ -1118,10 +1130,14 @@ fn updateCheckThread(app: *App) void {
 
     // Only notify if the remote version is strictly newer
     if (latest_sv.order(current_sv) != .gt) {
-        log.debug("up to date: current={s} latest={s}", .{ WIN_VERSION, latest_ver });
+        log.debug("up to date: current={d}.{d}.{d} latest={s}", .{
+            current_sv.major, current_sv.minor, current_sv.patch, latest_ver,
+        });
         return;
     }
-    log.info("update available: current={s} latest={s}", .{ WIN_VERSION, latest_ver });
+    log.info("update available: current={d}.{d}.{d} latest={s}", .{
+        current_sv.major, current_sv.minor, current_sv.patch, latest_ver,
+    });
 
     const hwnd = app.msg_hwnd orelse return;
 
@@ -1153,7 +1169,7 @@ fn showUpdateNotification(self: *App, ver: []const u8) void {
     var nid: w32.NOTIFYICONDATAW = std.mem.zeroes(w32.NOTIFYICONDATAW);
     nid.cbSize = @sizeOf(w32.NOTIFYICONDATAW);
     nid.hWnd = hwnd;
-    nid.uID = 1;
+    nid.uID = NOTIF_UPDATE_UID;
     nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP;
     nid.hIcon = w32.LoadIconW(null, w32.IDI_APPLICATION);
     nid.dwInfoFlags = w32.NIIF_INFO;
@@ -1178,7 +1194,7 @@ fn showUpdateNotification(self: *App, ver: []const u8) void {
 
     _ = w32.Shell_NotifyIconW(w32.NIM_ADD, &nid);
     _ = w32.Shell_NotifyIconW(w32.NIM_MODIFY, &nid);
-    _ = w32.SetTimer(hwnd, 2, 10000, null);
+    _ = w32.SetTimer(hwnd, NOTIF_UPDATE_TIMER_ID, 10000, null);
 }
 
 const VersionResult = struct { tag: [128]u8, len: usize };
@@ -1288,7 +1304,7 @@ fn showDesktopNotification(
     var nid: w32.NOTIFYICONDATAW = std.mem.zeroes(w32.NOTIFYICONDATAW);
     nid.cbSize = @sizeOf(w32.NOTIFYICONDATAW);
     nid.hWnd = hwnd;
-    nid.uID = 1;
+    nid.uID = NOTIF_DESKTOP_UID;
     nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP;
     nid.hIcon = w32.LoadIconW(null, w32.IDI_APPLICATION);
     nid.dwInfoFlags = w32.NIIF_INFO;
@@ -1315,9 +1331,9 @@ fn showDesktopNotification(
     _ = w32.Shell_NotifyIconW(w32.NIM_ADD, &nid);
     _ = w32.Shell_NotifyIconW(w32.NIM_MODIFY, &nid);
 
-    // Schedule icon removal after 6 seconds via a timer.
-    // Timer ID 2 (separate from quit timer).
-    _ = w32.SetTimer(hwnd, 2, 6000, null);
+    // Schedule icon removal via a timer (distinct from the update
+    // notification's timer so the two don't trample each other).
+    _ = w32.SetTimer(hwnd, NOTIF_DESKTOP_TIMER_ID, 6000, null);
 }
 
 /// Notify the core app of a tick.
@@ -1619,13 +1635,21 @@ fn msgWndProc(
         return 0;
     }
 
-    // Timer ID 2: remove the notification tray icon after balloon timeout.
-    if (msg == w32.WM_TIMER and wparam == 2) {
-        _ = w32.KillTimer(hwnd, 2);
+    // Notification icon cleanup timers. Each notification kind has its
+    // own (uID, timer-id) pair so an in-flight balloon isn't removed by
+    // an unrelated timeout.
+    if (msg == w32.WM_TIMER and
+        (wparam == NOTIF_DESKTOP_TIMER_ID or wparam == NOTIF_UPDATE_TIMER_ID))
+    {
+        const uid: u32 = if (wparam == NOTIF_DESKTOP_TIMER_ID)
+            NOTIF_DESKTOP_UID
+        else
+            NOTIF_UPDATE_UID;
+        _ = w32.KillTimer(hwnd, wparam);
         var nid: w32.NOTIFYICONDATAW = std.mem.zeroes(w32.NOTIFYICONDATAW);
         nid.cbSize = @sizeOf(w32.NOTIFYICONDATAW);
         nid.hWnd = hwnd;
-        nid.uID = 1;
+        nid.uID = uid;
         _ = w32.Shell_NotifyIconW(w32.NIM_DELETE, &nid);
         return 0;
     }

@@ -268,23 +268,30 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         if (vsn.tag) |tag| {
             // Tip releases behave just like any other pre-release so we skip.
             if (!std.mem.eql(u8, tag, "tip")) {
+                // The Windows fork uses `win-vX.Y.Z` tags that track the
+                // fork's own release schedule, independent of upstream's
+                // `vX.Y.Z` (which must match build.zig.zon). For win-v
+                // tags, parse the tag's version directly and use it as
+                // build_config.version.
+                if (std.mem.startsWith(u8, tag, "win-v")) {
+                    const parsed = std.SemanticVersion.parse(tag["win-v".len..]) catch {
+                        @panic("win-v tags must be in win-vX.Y.Z format");
+                    };
+                    break :version .{
+                        .major = parsed.major,
+                        .minor = parsed.minor,
+                        .patch = parsed.patch,
+                    };
+                }
+
                 const v_expected = b.fmt("v{d}.{d}.{d}", .{
                     app_version.major,
                     app_version.minor,
                     app_version.patch,
                 });
-                // The Windows fork uses a `win-v` prefix to avoid colliding
-                // with upstream's `v` tags. Accept either.
-                const winv_expected = b.fmt("win-v{d}.{d}.{d}", .{
-                    app_version.major,
-                    app_version.minor,
-                    app_version.patch,
-                });
 
-                if (!std.mem.eql(u8, tag, v_expected) and
-                    !std.mem.eql(u8, tag, winv_expected))
-                {
-                    @panic("tagged releases must be in vX.Y.Z or win-vX.Y.Z format matching build.zig");
+                if (!std.mem.eql(u8, tag, v_expected)) {
+                    @panic("tagged releases must be in vX.Y.Z format matching build.zig (or win-vX.Y.Z for the Windows fork)");
                 }
 
                 break :version .{
