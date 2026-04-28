@@ -121,6 +121,11 @@ palette_hwnd: ?w32.HWND = null,
 palette_edit: ?w32.HWND = null,
 /// Font handle for the palette edit (must be deleted on cleanup).
 palette_font: ?*anyopaque = null,
+/// Cached paint-time font for the palette list (14pt Segoe UI). The
+/// edit control uses palette_font (16pt); this is for FillRect/DrawText
+/// in paintPalette. Cached so we don't allocate a new HFONT on every
+/// keystroke-driven repaint.
+palette_paint_font: ?*anyopaque = null,
 /// Cached brush for palette background (reused in WM_CTLCOLOREDIT).
 palette_brush: ?w32.HBRUSH = null,
 /// Whether the command palette is currently visible.
@@ -318,6 +323,7 @@ pub fn deinit(self: *Surface) void {
     }
     if (self.palette_font) |f| { _ = w32.DeleteObject(f); self.palette_font = null; }
     if (self.palette_brush) |b| { _ = w32.DeleteObject(b); self.palette_brush = null; }
+    if (self.palette_paint_font) |f| { _ = w32.DeleteObject(f); self.palette_paint_font = null; }
 
     // Don't call DestroyWindow on the child HWND here. The OPENGL32.dll
     // driver hooks into window destruction and segfaults after we've already
@@ -1099,22 +1105,28 @@ pub fn paintPalette(self: *Surface, hwnd: w32.HWND) void {
     var client_rect: w32.RECT = undefined;
     if (w32.GetClientRect(hwnd, &client_rect) == 0) return;
 
-    // Fill background
-    const bg_brush = w32.CreateSolidBrush(w32.RGB(30, 30, 30)) orelse return;
-    _ = w32.FillRect(hdc, &client_rect, bg_brush);
-    _ = w32.DeleteObject(bg_brush);
+    // Fill background. Reuse the cached brush set up by setCommandPaletteActive
+    // — falling back to a one-shot brush only if it's somehow missing.
+    if (self.palette_brush) |b| {
+        _ = w32.FillRect(hdc, &client_rect, b);
+    } else if (w32.CreateSolidBrush(w32.RGB(30, 30, 30))) |b| {
+        _ = w32.FillRect(hdc, &client_rect, b);
+        _ = w32.DeleteObject(b);
+    }
 
-    // Create font (DPI-scaled)
+    // Reuse a cached 14pt font; create on first paint and keep it for
+    // the lifetime of this popup. Rebuilt by handleDpiChange.
     const s = self.scale;
-    const font_handle = w32.CreateFontW(
-        -@as(i32, @intFromFloat(@round(14.0 * s))), 0, 0, 0, 400,
-        0, 0, 0, 0, 0, 0, 0, 0,
-        std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI"),
-    );
-    const old_font = if (font_handle) |f| w32.SelectObject(hdc, f) else null;
+    if (self.palette_paint_font == null) {
+        self.palette_paint_font = w32.CreateFontW(
+            -@as(i32, @intFromFloat(@round(14.0 * s))), 0, 0, 0, 400,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI"),
+        );
+    }
+    const old_font = if (self.palette_paint_font) |f| w32.SelectObject(hdc, f) else null;
     defer {
         if (old_font) |of| _ = w32.SelectObject(hdc, of);
-        if (font_handle) |f| _ = w32.DeleteObject(f);
     }
 
     _ = w32.SetBkMode(hdc, 1); // TRANSPARENT
@@ -1471,6 +1483,10 @@ pub fn handleDpiChange(self: *Surface) void {
     if (self.palette_font) |old| {
         _ = w32.DeleteObject(old);
         self.palette_font = null;
+    }
+    if (self.palette_paint_font) |old| {
+        _ = w32.DeleteObject(old);
+        self.palette_paint_font = null;
     }
     if (self.search_edit) |edit| {
         self.search_font = w32.CreateFontW(
