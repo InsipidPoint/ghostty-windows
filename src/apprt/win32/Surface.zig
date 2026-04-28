@@ -1689,8 +1689,9 @@ pub fn handleMouseMove(self: *Surface, lparam: isize) void {
     };
 }
 
-/// Handle WM_MOUSEWHEEL.
-pub fn handleMouseWheel(self: *Surface, wparam: usize) void {
+/// Handle WM_MOUSEWHEEL (vertical) and WM_MOUSEHWHEEL (horizontal).
+/// `axis` selects which scroll axis to deliver the delta on.
+pub fn handleMouseWheel(self: *Surface, wparam: usize, axis: enum { vertical, horizontal }) void {
     if (!self.core_surface_ready) return;
     // The high word of wparam contains the wheel delta (signed).
     const raw_delta: i16 = @bitCast(@as(u16, @intCast((wparam >> 16) & 0xFFFF)));
@@ -1698,7 +1699,10 @@ pub fn handleMouseWheel(self: *Surface, wparam: usize) void {
 
     const scroll_mods: input.ScrollMods = .{};
 
-    self.core_surface.scrollCallback(0, delta, scroll_mods) catch |err| {
+    // Win32 horizontal wheel positive-right; core API positive-right also.
+    const xoff: f64 = if (axis == .horizontal) delta else 0;
+    const yoff: f64 = if (axis == .vertical) delta else 0;
+    self.core_surface.scrollCallback(xoff, yoff, scroll_mods) catch |err| {
         log.err("scroll callback error: {}", .{err});
     };
 }

@@ -1623,6 +1623,7 @@ pub fn windowWndProc(
         w32.WM_MOUSEMOVE,
         w32.WM_MOUSELEAVE,
         w32.WM_MOUSEWHEEL,
+        w32.WM_MOUSEHWHEEL,
         w32.WM_KEYDOWN,
         w32.WM_KEYUP,
         w32.WM_SYSKEYDOWN,

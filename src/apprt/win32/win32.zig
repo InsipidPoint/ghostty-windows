@@ -146,6 +146,7 @@ pub const WM_RBUTTONUP: u32 = 0x0205;
 pub const WM_MBUTTONDOWN: u32 = 0x0207;
 pub const WM_MBUTTONUP: u32 = 0x0208;
 pub const WM_MOUSEWHEEL: u32 = 0x020A;
+pub const WM_MOUSEHWHEEL: u32 = 0x020E;
 pub const WM_SETCURSOR: u32 = 0x0020;
 pub const WM_DPICHANGED: u32 = 0x02E0;
 

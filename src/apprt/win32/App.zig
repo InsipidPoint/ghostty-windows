@@ -1517,7 +1517,12 @@ fn surfaceWndProc(
         },
 
         w32.WM_MOUSEWHEEL => {
-            surface.handleMouseWheel(wparam);
+            surface.handleMouseWheel(wparam, .vertical);
+            return 0;
+        },
+
+        w32.WM_MOUSEHWHEEL => {
+            surface.handleMouseWheel(wparam, .horizontal);
             return 0;
         },
 
