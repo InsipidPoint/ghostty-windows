@@ -49,9 +49,17 @@ if [ -d zig-out/share/ghostty ]; then
     echo "  share/ghostty/shell-integration/"
 fi
 
-# Skip terminfo — it contains symlinks that Windows ZIP tools can't
-# handle, and native Windows apps don't use terminfo anyway. WSL/SSH
-# users get terminfo from the Linux side.
+# Copy the terminfo source file. resourcesDir() (src/os/resourcesdir.zig)
+# uses share/terminfo/ghostty.terminfo as the Windows sentinel; without it,
+# theme loading silently fails on fresh extracts. The compiled terminfo
+# tree contains symlinks Windows ZIP tools can't handle, so we ship only
+# the plain-text source — native Windows apps don't read terminfo anyway,
+# and WSL/SSH users get terminfo from the Linux side.
+if [ -f zig-out/share/terminfo/ghostty.terminfo ]; then
+    mkdir -p "$STAGE_DIR/share/terminfo"
+    cp zig-out/share/terminfo/ghostty.terminfo "$STAGE_DIR/share/terminfo/"
+    echo "  share/terminfo/ghostty.terminfo (resource sentinel)"
+fi
 
 # Create a minimal README
 cat > "$STAGE_DIR/README.txt" << READMEEOF
