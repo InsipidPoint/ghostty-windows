@@ -862,7 +862,6 @@ pub fn performAction(
         .key_sequence,
         .key_table,
         .pwd,
-        .color_change,
         .cell_size,
         .progress_report,
         .readonly,
@@ -875,6 +874,32 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .color_change => {
+            // Track terminal background color changes (OSC 10/11) so the
+            // class background brush matches. The renderer paints the
+            // client area via OpenGL — the brush only affects the brief
+            // flash on resize before the renderer catches up.
+            if (value.kind != .background) return true;
+            if (self.bg_brush) |old_brush| {
+                _ = w32.DeleteObject(@ptrCast(old_brush));
+            }
+            self.bg_brush = w32.CreateSolidBrush(w32.RGB(value.r, value.g, value.b));
+            // SetClassLongPtrW propagates the new brush to all existing
+            // windows of the class, not just future ones.
+            for (self.windows.items) |w| {
+                if (w.hwnd) |h| {
+                    if (self.bg_brush) |b| {
+                        _ = w32.SetClassLongPtrW(
+                            h,
+                            w32.GCLP_HBRBACKGROUND,
+                            @intCast(@intFromPtr(b)),
+                        );
+                    }
+                }
+            }
+            return true;
+        },
 
         .size_limit => {
             switch (target) {

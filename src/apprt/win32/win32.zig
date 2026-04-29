@@ -290,6 +290,16 @@ pub const IDI_APPLICATION: usize = 32512;
 /// dist/windows/ghostty.rc).
 pub const IDI_GHOSTTY: usize = 1;
 
+// SetClassLongPtrW indices (used to swap the class-level background
+// brush after a config or OSC color change).
+pub const GCLP_HBRBACKGROUND: i32 = -10;
+
+pub extern "user32" fn SetClassLongPtrW(
+    hWnd: HWND,
+    nIndex: i32,
+    dwNewLong: isize,
+) callconv(.winapi) isize;
+
 pub extern "user32" fn LoadIconW(
     hInstance: ?HINSTANCE,
     lpIconName: usize,
