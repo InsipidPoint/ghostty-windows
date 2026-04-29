@@ -111,12 +111,12 @@ and reading the registry. If the mapping is reversed, the check is flipped —
 no other code changes.
 
 Re-read on `WM_SETTINGCHANGE` (forwarded from Surface) so toggling the OS
-setting takes effect without restarting Ghostty. Mode change triggers:
-
-- Resize the scrollbar HWND (8px ↔ 14px).
-- Repaint.
-- Notify Surface so it can recompute the grid size (always-visible mode steals
-  one column).
+setting takes effect without restart. `onSettingsChange` returns `true` when
+the mode changed; Surface responds by posting `WM_SIZE` to itself with the
+current client dimensions so the standard resize path runs (which calls
+`scrollbar.resize()`, gets the updated width-to-subtract, and re-flows the
+grid). This keeps mode-change handling on the same code path as ordinary
+window resizes — no duplicate logic.
 
 ## Geometry
 
@@ -125,6 +125,17 @@ Width (DPI-scaled, base widths at 96 DPI):
 - **Overlay collapsed:** 8px
 - **Overlay expanded (hover/drag):** 14px
 - **Always-visible:** 14px
+
+Hover and visibility are **independent axes** in overlay mode:
+
+- **Visibility** (hidden/fading_in/shown/fading_out) is driven by scroll
+  events and the idle timer — controls the alpha of the thumb.
+- **Hover** (true/false) is driven by `WM_MOUSEMOVE`/`WM_MOUSELEAVE` —
+  controls the width (8px ↔ 14px) and the base color (idle ↔ hover).
+
+A scrollbar that is hovered while fading out, for example, paints a
+14px-wide hover-colored thumb at decreasing alpha. Both axes are evaluated
+at every paint.
 
 Anchored to right edge, full client height. In always-visible mode, the
 Surface subtracts `scrollbar_width` from the reported client width before
@@ -136,8 +147,12 @@ Thumb geometry:
 
 ```
 thumb_y = (offset / total) * track_height
-thumb_h = max(20_px_dpi, (page / total) * track_height)
+thumb_h = max(20_px_dpi, (len / total) * track_height)
 ```
+
+(`len` is the visible-rows field of `terminal.Scrollbar` — i.e., the page
+size. Field names match the existing `terminal.Scrollbar` struct used by the
+core renderer.)
 
 The 20px minimum keeps the thumb grabbable on very long scrollbacks.
 
@@ -190,7 +205,7 @@ handler.
 | `WM_MOUSEMOVE` | Update `hover`; `TrackMouseEvent(TME_LEAVE)`; if dragging, compute new offset and call `surface.scrollToRow`; repaint. |
 | `WM_MOUSELEAVE` | Clear `hover`; in overlay mode, restart 1s idle timer; repaint. |
 | `WM_LBUTTONDOWN` on thumb rect | `SetCapture`; `drag_anchor = mouse_y - thumb_y`; `dragging = true`. |
-| `WM_LBUTTONDOWN` on track (not thumb) | Page up/down: `offset ± page`, clamped to `[0, total - page]`. |
+| `WM_LBUTTONDOWN` on track (not thumb) | Page up/down: `offset ± len`, clamped to `[0, total - len]`. |
 | `WM_LBUTTONUP` | `ReleaseCapture`; clear `dragging`; restart idle timer if overlay & not hovered. |
 
 ### Drag math
@@ -204,7 +219,7 @@ const new_thumb_y = std.math.clamp(
 const new_offset = @as(usize, @intFromFloat(
     @round(@as(f32, @floatFromInt(new_thumb_y)) /
            @as(f32, @floatFromInt(track_height - thumb_h)) *
-           @as(f32, @floatFromInt(total - page))),
+           @as(f32, @floatFromInt(total - len))),
 ));
 ```
 
