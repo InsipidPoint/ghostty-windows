@@ -1,3 +1,4 @@
+// Ghostty for Windows — application resources.
 // LANG_NEUTRAL(0), SUBLANG_NEUTRAL(0)
 LANGUAGE 0, 0
 
@@ -7,30 +8,39 @@ RT_MANIFEST 24 "ghostty.manifest"
 #define ID_ICON_GHOSTTY 1
 ID_ICON_GHOSTTY ICON "ghostty.ico"
 
+// Version info — shown in Explorer's Properties → Details and used by
+// signtool / installer tooling. The numbers here are baseline; the
+// actual build-time version comes from build_config.version, but the
+// PE resource needs static values at link time.
+//
+// Update FILEVERSION/PRODUCTVERSION when bumping for a release. The
+// commas in the comma-form are 16-bit fields: MAJOR,MINOR,PATCH,BUILD.
 VS_VERSION_INFO VERSIONINFO
-//FILEVERSION     VERSION_MAJOR,VERSION_MINOR,VERSION_PATCH,VERSION_COMMIT_HEIGHT
-//PRODUCTVERSION  VERSION_MAJOR,VERSION_MINOR,VERSION_PATCH,VERSION_COMMIT_HEIGHT
-//FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
-//FILEFLAGS               VER_DBG
-//FILEOS                  VOS_NT
-//FILETYPE                VFT_APP
-//FILESUBTYPE             VFT2_UNKNOWN
+FILEVERSION    1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK  0x3F
+FILEFLAGS      0x0
+FILEOS         0x40004 // VOS_NT_WINDOWS32
+FILETYPE       0x1     // VFT_APP
+FILESUBTYPE    0x0
 BEGIN
     BLOCK "StringFileInfo"
     BEGIN
-        BLOCK "040904b0"
+        // 0409 = U.S. English, 04B0 = Unicode codepage 1200
+        BLOCK "040904B0"
         BEGIN
-        //VALUE "CompanyName",        "???"
-        //VALUE "FileDescription",    "???"
-        //VALUE "FileVersion",        VERSION
-        //VALUE "LegalCopyright",     "(C) 2024 ???"
-        VALUE "OriginalFilename", "ghostty.exe"
-        VALUE "ProductName",        "Ghostty"
-        //VALUE "ProductVersion",     VERSION
+            VALUE "CompanyName",      "Ghostty Windows"
+            VALUE "FileDescription",  "Ghostty terminal emulator"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "ghostty"
+            VALUE "LegalCopyright",   "Original work copyright Mitchell Hashimoto. Windows port additions copyright Shiwei Song. MIT License."
+            VALUE "OriginalFilename", "ghostty.exe"
+            VALUE "ProductName",      "Ghostty"
+            VALUE "ProductVersion",   "1.0.0.0"
         END
     END
     BLOCK "VarFileInfo"
     BEGIN
-        VALUE "Translation", 0x0409,1200
+        VALUE "Translation", 0x0409, 1200
     END
 END
