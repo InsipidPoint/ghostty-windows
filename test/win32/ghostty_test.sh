@@ -713,7 +713,9 @@ CFGEOF
         return
     fi
 
-    # Check that window is larger than default 800x600
+    # Check that window is larger than default 800x600. The config asked
+    # for 120 cols × 40 rows; with default font that is roughly
+    # 1100×680 client, definitely > 800 wide.
     local check
     check="$(ps -Action check -ProcessId "$pid")"
     local client_size
@@ -722,16 +724,24 @@ CFGEOF
     width="$(echo "$client_size" | cut -dx -f1)"
     height="$(echo "$client_size" | cut -dx -f2)"
 
+    local result=0
     if [ "$width" -gt 800 ] 2>/dev/null; then
         echo "  ✓ Window width ($width) is larger than default 800"
     else
-        echo "  ⊘ Window width ($width) — may not have applied config size (non-blocking)"
+        echo "  ✗ Window width ($width) — config window-width=120 not applied"
+        result=1
     fi
 
     ps -Action kill -ProcessId "$pid" 2>/dev/null || true
     rm -rf "$(wslpath "$WIN_TEMP")/ghostty-test-config"
-    PASS=$((PASS + 1))
-    echo "  ● PASSED"
+
+    if [ "$result" -eq 0 ]; then
+        PASS=$((PASS + 1))
+        echo "  ● PASSED"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  ● FAILED"
+    fi
 }
 
 test_search() {
