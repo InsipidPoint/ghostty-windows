@@ -106,6 +106,14 @@ drag_start_rect: w32.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
 /// new-tab "+" button calling addTab()).
 closing: bool = false,
 
+/// Optional resize limits in window-rect pixels (incl. non-client).
+/// 0 means "no limit" — the OS default applies. Set by .size_limit
+/// and consulted from WM_GETMINMAXINFO.
+min_track_w: i32 = 0,
+min_track_h: i32 = 0,
+max_track_w: i32 = 0,
+max_track_h: i32 = 0,
+
 pub const InitOptions = struct {
     is_quick_terminal: bool = false,
 };
@@ -1639,6 +1647,22 @@ pub fn windowWndProc(
         w32.WM_SIZE => {
             window.handleResize();
             return 0;
+        },
+        w32.WM_GETMINMAXINFO => {
+            // Apply user-configured size limits if any. lparam points
+            // to a MINMAXINFO the OS will consult for resize clamping.
+            if (window.min_track_w > 0 or window.min_track_h > 0 or
+                window.max_track_w > 0 or window.max_track_h > 0)
+            {
+                const mmi: *w32.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
+                if (window.min_track_w > 0) mmi.ptMinTrackSize.x = window.min_track_w;
+                if (window.min_track_h > 0) mmi.ptMinTrackSize.y = window.min_track_h;
+                if (window.max_track_w > 0) mmi.ptMaxTrackSize.x = window.max_track_w;
+                if (window.max_track_h > 0) mmi.ptMaxTrackSize.y = window.max_track_h;
+                return 0;
+            }
+            // No limits → fall through to DefWindowProc.
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         w32.WM_ENTERSIZEMOVE => {
             if (window.tab_count > 0) {

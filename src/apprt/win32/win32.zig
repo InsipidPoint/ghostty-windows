@@ -540,6 +540,17 @@ pub extern "user32" fn ShowCursor(
     bShow: i32,
 ) callconv(.winapi) i32;
 
+// WM_GETMINMAXINFO — drives the OS-side resize clamp.
+pub const WM_GETMINMAXINFO: u32 = 0x0024;
+
+pub const MINMAXINFO = extern struct {
+    ptReserved: POINT,
+    ptMaxSize: POINT,
+    ptMaxPosition: POINT,
+    ptMinTrackSize: POINT,
+    ptMaxTrackSize: POINT,
+};
+
 // FlashWindowEx — used to draw attention to an unfocused window.
 pub const FLASHW_STOP: u32 = 0;
 pub const FLASHW_CAPTION: u32 = 0x00000001;

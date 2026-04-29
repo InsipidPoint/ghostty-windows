@@ -858,7 +858,6 @@ pub fn performAction(
         .pwd,
         .color_change,
         .cell_size,
-        .size_limit,
         .progress_report,
         .readonly,
         // Platform-specific actions that don't apply on Windows:
@@ -870,6 +869,20 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .size_limit => {
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    const win = core_surface.rt_surface.parent_window;
+                    win.min_track_w = @intCast(value.min_width);
+                    win.min_track_h = @intCast(value.min_height);
+                    win.max_track_w = @intCast(value.max_width);
+                    win.max_track_h = @intCast(value.max_height);
+                },
+            }
+            return true;
+        },
 
         .toggle_visibility => {
             // Hide all visible top-level Ghostty windows; if any are
