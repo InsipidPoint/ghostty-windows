@@ -1661,6 +1661,11 @@ fn surfaceWndProc(
             return 0;
         },
 
+        w32.WM_DROPFILES => {
+            surface.handleDropFiles(wparam);
+            return 0;
+        },
+
         w32.WM_SETCURSOR => {
             // Only override the cursor in the client area. For non-client
             // areas (resize borders, title bar), let DefWindowProc handle it.

@@ -551,6 +551,27 @@ pub const MINMAXINFO = extern struct {
     ptMaxTrackSize: POINT,
 };
 
+// Drag and drop (shell32) — used so dropping files onto a terminal
+// pastes their paths.
+pub const HDROP = *opaque {};
+pub const WM_DROPFILES: u32 = 0x0233;
+
+pub extern "shell32" fn DragAcceptFiles(
+    hWnd: HWND,
+    fAccept: i32,
+) callconv(.winapi) void;
+
+pub extern "shell32" fn DragQueryFileW(
+    hDrop: HDROP,
+    iFile: u32,
+    lpszFile: ?[*]u16,
+    cch: u32,
+) callconv(.winapi) u32;
+
+pub extern "shell32" fn DragFinish(
+    hDrop: HDROP,
+) callconv(.winapi) void;
+
 // FlashWindowEx — used to draw attention to an unfocused window.
 pub const FLASHW_STOP: u32 = 0;
 pub const FLASHW_CAPTION: u32 = 0x00000001;

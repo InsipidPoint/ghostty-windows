@@ -207,6 +207,10 @@ pub fn init(
         self.hwnd = null;
     }
 
+    // Accept dropped files so a file dragged onto the terminal pastes
+    // its path. WM_DROPFILES is delivered to surfaceWndProc.
+    w32.DragAcceptFiles(hwnd, 1);
+
     // Store the Surface pointer in the window's GWLP_USERDATA so that
     // the WndProc can retrieve it.
     _ = w32.SetWindowLongPtrW(hwnd, w32.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
@@ -1769,6 +1773,62 @@ pub fn handleMouseMove(self: *Surface, lparam: isize) void {
 
     self.core_surface.cursorPosCallback(.{ .x = x, .y = y }, mods) catch |err| {
         log.err("cursor pos callback error: {}", .{err});
+    };
+}
+
+/// Handle WM_DROPFILES — a file (or files) was dropped onto this
+/// surface. Convert each path to UTF-8, quote if it contains
+/// whitespace, and paste into the terminal at the cursor.
+pub fn handleDropFiles(self: *Surface, wparam: usize) void {
+    if (!self.core_surface_ready) return;
+    const hdrop: w32.HDROP = @ptrFromInt(wparam);
+    defer w32.DragFinish(hdrop);
+
+    // Number of files dropped (passing 0xFFFFFFFF as iFile).
+    const count = w32.DragQueryFileW(hdrop, 0xFFFFFFFF, null, 0);
+    if (count == 0) return;
+
+    const alloc = self.app.core_app.alloc;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(alloc);
+
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        // First call with NULL gets length (in chars, excluding NUL).
+        const u16_len = w32.DragQueryFileW(hdrop, i, null, 0);
+        if (u16_len == 0) continue;
+        const u16_buf = alloc.alloc(u16, u16_len + 1) catch return;
+        defer alloc.free(u16_buf);
+        const got = w32.DragQueryFileW(hdrop, i, u16_buf.ptr, @intCast(u16_buf.len));
+        if (got == 0) continue;
+
+        // UTF-16 → UTF-8.
+        const utf8_buf = alloc.alloc(u8, u16_buf.len * 4) catch return;
+        defer alloc.free(utf8_buf);
+        const utf8_len = std.unicode.utf16LeToUtf8(utf8_buf, u16_buf[0..got]) catch continue;
+        const path = utf8_buf[0..utf8_len];
+
+        if (i > 0) buf.append(alloc, ' ') catch return;
+        const needs_quote = std.mem.indexOfAny(u8, path, " \t") != null;
+        if (needs_quote) buf.append(alloc, '"') catch return;
+        buf.appendSlice(alloc, path) catch return;
+        if (needs_quote) buf.append(alloc, '"') catch return;
+    }
+
+    if (buf.items.len == 0) return;
+
+    // Send through keyCallback as text so it goes through the same
+    // path as IME/clipboard input (PTY-bound, encoding-correct).
+    _ = self.core_surface.keyCallback(.{
+        .action = .press,
+        .key = .unidentified,
+        .mods = .{},
+        .consumed_mods = .{},
+        .composing = false,
+        .utf8 = buf.items,
+        .unshifted_codepoint = 0,
+    }) catch |err| {
+        log.err("drop-files keyCallback: {}", .{err});
     };
 }
 
