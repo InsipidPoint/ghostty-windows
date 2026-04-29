@@ -48,6 +48,7 @@ patch_rpath: ?[]const u8 = null,
 /// Artifacts
 flatpak: bool = false,
 snap: bool = false,
+windows_console: bool = false,
 emit_bench: bool = false,
 emit_docs: bool = false,
 emit_exe: bool = false,
@@ -177,6 +178,12 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         bool,
         "snap",
         "Build for Snap (do specific Snap operations). Only has an effect targeting Linux.",
+    ) orelse false;
+
+    config.windows_console = b.option(
+        bool,
+        "windows-console",
+        "On Windows, link with the Console subsystem instead of the Windows GUI subsystem so stderr/stdout are visible. Useful for debugging release builds. Default false (Windows subsystem) for non-Debug builds; debug builds always use Console.",
     ) orelse false;
 
     config.sentry = b.option(
