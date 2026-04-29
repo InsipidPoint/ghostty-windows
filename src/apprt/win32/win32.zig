@@ -126,6 +126,7 @@ pub const WM_QUIT: u32 = 0x0012;
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_SIZE: u32 = 0x0005;
+pub const WM_MOVE: u32 = 0x0003;
 pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_KILLFOCUS: u32 = 0x0008;
 pub const WM_ERASEBKGND: u32 = 0x0014;

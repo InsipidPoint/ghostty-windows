@@ -180,6 +180,43 @@ pub const Scrollbar = struct {
         _ = w32.DestroyWindow(self.hwnd);
         self.alloc.destroy(self);
     }
+
+    /// Update the cached scroll state. Painting / state-machine
+    /// integration comes in later tasks.
+    pub fn update(self: *Scrollbar, state: terminal.Scrollbar) void {
+        self.state = state;
+        self.first_update = false;
+    }
+
+    /// Reposition and resize the popup to stay glued to the surface.
+    /// Returns the new scrollbar width (stub returns 0 until Task 5).
+    pub fn repositionAndResize(self: *Scrollbar) i32 {
+        _ = self;
+        return 0;
+    }
+
+    /// Show or hide the popup when the owner surface is shown/hidden.
+    pub fn setOwnerVisible(self: *Scrollbar, visible: bool) void {
+        _ = w32.ShowWindow(self.hwnd, if (visible) w32.SW_SHOWNOACTIVATE else w32.SW_HIDE);
+    }
+
+    /// Update cached theme colors (used by the painter in later tasks).
+    pub fn setTheme(self: *Scrollbar, bg: terminal.color.RGB, fg: terminal.color.RGB) void {
+        self.bg = bg;
+        self.fg = fg;
+    }
+
+    /// Called on WM_SETTINGCHANGE. Returns true if a mode change
+    /// requires the terminal grid to be re-flowed.
+    pub fn onSettingsChange(self: *Scrollbar) bool {
+        _ = self;
+        return false; // No-op until Task 8.
+    }
+
+    /// Update the DPI scale factor.
+    pub fn onDpiChanged(self: *Scrollbar, dpi: u32) void {
+        self.scale = @as(f32, @floatFromInt(dpi)) / 96.0;
+    }
 };
 
 var class_registered: bool = false;
