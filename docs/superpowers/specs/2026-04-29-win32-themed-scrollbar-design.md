@@ -24,9 +24,9 @@ Win32 equivalent of `NSScroller` that picks up our theme colors.
 
 ## Goal
 
-Replace the native scrollbar with a custom child-window scrollbar painted using
-the terminal's own theme background and foreground colors, with behavior that
-honors the OS "Always show scrollbars" accessibility setting:
+Replace the native scrollbar with a custom layered-popup scrollbar painted
+using the terminal's own theme colors, with behavior that honors the OS
+"Always show scrollbars" accessibility setting:
 
 - **Auto-hide (overlay) mode** when the OS prefers dynamic scrollbars (the
   Win11 default). Mac-style: invisible until the user scrolls, fades out after
@@ -36,8 +36,9 @@ honors the OS "Always show scrollbars" accessibility setting:
 
 ## Non-goals
 
-- Does not replicate the macOS NSScroller blur/vibrancy effect. We simulate
-  translucency by pre-mixing colors against the terminal background.
+- Does not replicate the macOS NSScroller blur/vibrancy effect. We use
+  per-pixel alpha for translucency, but no Gaussian blur of the underlying
+  content.
 - Does not add horizontal scrollbar support (terminal grid is fixed-width).
 - Does not add a config knob for forcing a mode — the OS setting is the source
   of truth, matching what every other Win32 app does.
@@ -46,8 +47,53 @@ honors the OS "Always show scrollbars" accessibility setting:
 
 A new module `src/apprt/win32/Scrollbar.zig` owns one scrollbar instance per
 `Surface`. It registers a custom window class `GhosttyScrollbar` (once per
-process) and creates a `WS_CHILD` window parented to the Surface HWND, anchored
-to the right edge of the client area.
+process) and creates a `WS_EX_LAYERED | WS_POPUP` window **owned by** the
+Surface HWND (not a child of it). The scrollbar is positioned at the right
+edge of the surface's client area in screen coordinates.
+
+### Why a layered popup, not a child window
+
+Surface.zig:231 creates the OpenGL context on the surface HWND
+(`wglCreateContext(self.hdc)`). Every frame, `SwapBuffers` presents the GL
+backbuffer to the entire client area — Win32's child-window clipping
+(`WS_CLIPCHILDREN`) does not affect `SwapBuffers`, so a `WS_CHILD` scrollbar
+would be overpainted every frame.
+
+Layered top-level windows are composited *above* accelerated content by DWM,
+so an `WS_EX_LAYERED | WS_POPUP` overlay survives. This is the standard Win32
+pattern for drawing controls over OpenGL/D3D surfaces (Steam, Spotify, NVIDIA
+overlay all use it).
+
+Owned popups follow their owner: when the Surface HWND is hidden, minimized,
+moved, or activated, the popup follows automatically — except for position,
+which we update manually on `WM_MOVE`/`WM_SIZE` (see below). Z-order is
+correct: another Ghostty window on top obscures both the surface and its
+scrollbar.
+
+### Painting via UpdateLayeredWindow
+
+Layered windows do not use the normal `WM_PAINT` flow. Instead, paint by
+constructing a 32-bit BGRA bitmap and calling `UpdateLayeredWindow` with
+`ULW_ALPHA`. Per-pixel alpha lets us draw:
+
+- A fully transparent track (alpha=0 everywhere outside the thumb).
+- A translucent thumb (theme foreground at chosen alpha — e.g., 80/255 idle,
+  140/255 hover, 200/255 drag).
+
+Bitmap size for a typical surface: 14 × ~600 px = ~33 KB. Rebuilt only when
+state changes, not every frame.
+
+### Position tracking
+
+The popup is in screen coordinates, so the Surface must keep it positioned:
+
+- On `WM_MOVE` / `WM_SIZE` of the Surface HWND, call
+  `scrollbar.repositionAndResize()` which calls `ClientToScreen` to compute
+  the right-edge rect and `SetWindowPos` (with `SWP_NOACTIVATE | SWP_NOZORDER`).
+- On `WM_SHOWWINDOW(false)` of the Surface, hide the popup; on
+  `WM_SHOWWINDOW(true)`, reposition and re-show (subject to mode and
+  visibility state).
+- On surface destroy, destroy the popup first.
 
 ### Removal of existing native scrollbar
 
@@ -67,25 +113,73 @@ In `src/apprt/win32/Surface.zig`:
 
 ```zig
 pub const Scrollbar = struct {
-    pub fn create(parent: HWND, surface: *Surface) !*Scrollbar;
+    /// Allocated with surface.app.alloc; freed in destroy().
+    pub fn create(alloc: Allocator, owner: HWND, surface: *Surface) !*Scrollbar;
     pub fn destroy(self: *Scrollbar) void;
 
     /// Surface forwards new scroll state here (called from
-    /// performAction(.scrollbar)).
+    /// performAction(.scrollbar)). The very first call after create()
+    /// sets state silently — no fade-in. Subsequent calls trigger fade-in
+    /// in overlay mode.
     pub fn update(self: *Scrollbar, state: terminal.Scrollbar) void;
 
-    /// Surface forwards client area resize here (called from WM_SIZE).
-    /// Returns the width to subtract from the grid client area
-    /// (0 in overlay mode, scrollbar_width_dpi in always-visible mode).
-    pub fn resize(self: *Scrollbar, client_width: i32, client_height: i32) i32;
+    /// Surface forwards WM_MOVE/WM_SIZE here so the popup tracks the
+    /// surface's right edge. Returns the width to subtract from the grid
+    /// client area (0 in overlay mode, scrollbar_width_dpi in
+    /// always-visible mode).
+    pub fn repositionAndResize(self: *Scrollbar) i32;
 
-    /// Surface forwards theme/config changes here (palette load, config reload).
+    /// Surface forwards WM_SHOWWINDOW here so the popup follows
+    /// hide/show of the owner.
+    pub fn setOwnerVisible(self: *Scrollbar, visible: bool) void;
+
+    /// Surface forwards theme/config changes here.
     pub fn setTheme(self: *Scrollbar, bg: terminal.color.RGB, fg: terminal.color.RGB) void;
 
-    /// Surface forwards WM_SETTINGCHANGE here so we re-read the registry.
-    pub fn onSettingsChange(self: *Scrollbar) void;
+    /// Surface forwards WM_SETTINGCHANGE. Returns true if the mode flipped,
+    /// in which case Surface should post WM_SIZE to re-flow the grid.
+    pub fn onSettingsChange(self: *Scrollbar) bool;
+
+    /// Surface forwards WM_DPICHANGED so we can recompute widths.
+    pub fn onDpiChanged(self: *Scrollbar, dpi: u32) void;
 };
 ```
+
+### Memory ownership
+
+The `Scrollbar` struct is heap-allocated with `surface.app.alloc` (the same
+allocator used by all other Win32 apprt resources). `Surface` holds it as
+`scrollbar: ?*Scrollbar`. Lifecycle:
+
+- Created in `Surface.init` after the surface HWND exists and OpenGL is set up.
+- Destroyed in `Surface.deinit` before the surface HWND is destroyed (so
+  `DestroyWindow` on the popup runs while its owner still exists).
+
+### Threading
+
+All operations on `Scrollbar` (including `update`) run on the **main app
+thread**:
+
+- `setScrollbar` is invoked from `App.performAction(.scrollbar)`
+  (`App.zig:548`), which runs on the main thread.
+- `WM_PAINT`-equivalent (UpdateLayeredWindow refresh) and `WM_TIMER` for fade
+  animation are dispatched by the main thread's message loop.
+- The renderer thread never touches `Scrollbar`.
+
+No synchronization needed. The spec calls this out explicitly so future
+maintainers don't add locks reflexively.
+
+### Split panes and tabs
+
+Each `Surface` is an independent HWND with its own OpenGL context and its own
+`Scrollbar` instance. Splits and tabs work for free:
+
+- Splitting a pane creates a new Surface → new Scrollbar.
+- Switching tabs: the old Surface gets `WM_SHOWWINDOW(false)`, hiding its
+  scrollbar; the new Surface gets `WM_SHOWWINDOW(true)`, showing its
+  scrollbar (subject to overlay visibility state).
+- Resizing a split pane fires `WM_SIZE` on each affected Surface, which calls
+  `repositionAndResize()` on its scrollbar.
 
 ### Scroll action callback
 
@@ -114,9 +208,9 @@ Re-read on `WM_SETTINGCHANGE` (forwarded from Surface) so toggling the OS
 setting takes effect without restart. `onSettingsChange` returns `true` when
 the mode changed; Surface responds by posting `WM_SIZE` to itself with the
 current client dimensions so the standard resize path runs (which calls
-`scrollbar.resize()`, gets the updated width-to-subtract, and re-flows the
-grid). This keeps mode-change handling on the same code path as ordinary
-window resizes — no duplicate logic.
+`scrollbar.repositionAndResize()`, gets the updated width-to-subtract, and
+re-flows the grid). This keeps mode-change handling on the same code path
+as ordinary window resizes — no duplicate logic.
 
 ## Geometry
 
@@ -158,47 +252,79 @@ The 20px minimum keeps the thumb grabbable on very long scrollbacks.
 
 ## Painting
 
-GDI double-buffered paint in `WM_PAINT` (memory DC + BitBlt to avoid flicker).
-No layered window. Translucency is simulated by pre-mixing colors against the
-known terminal background:
+`UpdateLayeredWindow` with `ULW_ALPHA` and a 32-bit BGRA bitmap built in a
+GDI memory DC. Per-pixel alpha lets the thumb be genuinely translucent over
+the OpenGL terminal content, while the rest of the popup is fully transparent
+(alpha=0).
+
+Color and alpha (`Scrollbar.zig` helpers, all from `terminal.color.RGB`):
 
 ```zig
-fn lerp(a: RGB, b: RGB, t: f32) RGB { ... }
+const thumb_rgb = fg;  // theme foreground
 
-const track_color      = bg;                       // skipped in overlay mode
-const thumb_color_idle = lerp(bg, fg, 0.30);       // subtle
-const thumb_color_hover = lerp(bg, fg, 0.55);
-const thumb_color_drag  = lerp(bg, fg, 0.75);
+// Base alpha tied to interaction state.
+const alpha_idle:  u8 = 80;   // ~31% — subtle in overlay mode
+const alpha_hover: u8 = 140;  // ~55%
+const alpha_drag:  u8 = 200;  // ~78%
 ```
+
+In **always-visible mode** the track is also painted (theme background, full
+alpha) so the scrollbar reads as a solid, opaque widget like every other
+always-visible Win32 app. In **overlay mode** the track is fully transparent;
+only the thumb is drawn.
+
+The bitmap is rebuilt only when state changes (mode, theme, scroll position,
+hover, dragging, fade alpha). Steady-state idle costs zero paints.
 
 ### Visibility state machine (overlay mode only)
 
 States: `hidden / fading_in / shown / fading_out`.
 
-Driven by a 60Hz `SetTimer` while animating. Alpha steps of 32/frame → ~133ms
-fade. Alpha is applied at paint time by lerping the thumb color against the
-background a second time:
+Driven by a 60Hz `SetTimer` while animating. Effective alpha multiplies the
+base alpha by `current_fade / 255`:
 
 ```zig
-const visible_color = lerp(bg, base_color, alpha / 255.0);
+const final_alpha: u8 = @intCast(@as(u16, base_alpha) * fade / 255);
 ```
+
+Fade steps: 32/frame → ~133ms fade in or out.
 
 Triggers:
 
-- `update(state)` called with a different state → start fade-in, restart idle
-  timer.
-- Mouse enters → start fade-in.
-- Mouse leaves AND not dragging → start 1000ms idle timer; on fire, fade out.
-- Drag in progress → stay shown regardless of timer.
+- **First `update()` after create()** → set state silently to `hidden`. No
+  fade-in on startup.
+- **Subsequent `update()` with changed state** → fade-in if hidden; restart
+  1s idle timer.
+- **Mouse enters popup** → fade-in.
+- **Mouse leaves AND not dragging** → restart 1s idle timer; on fire, fade
+  out.
+- **Drag in progress** → state pinned to `shown`; idle timer suspended.
 
-Always-visible mode skips the state machine entirely; thumb is always painted
-at `thumb_color_idle` (or hover/drag color when applicable).
+Always-visible mode skips the state machine entirely. `final_alpha = base_alpha`
+always, with `base_alpha` switching among idle/hover/drag.
 
 ## Mouse handling
 
-All handled on the scrollbar HWND. Mouse wheel is **not** intercepted — it
-continues to fall through to the parent Surface's existing `WM_MOUSEWHEEL`
-handler.
+All handled on the scrollbar HWND (the layered popup). Mouse wheel is **not**
+intercepted — `WM_MOUSEWHEEL` arrives at whichever window has focus, which is
+the Surface, so the existing wheel handler keeps working unchanged.
+
+### Click-through when hidden
+
+In overlay mode with `visibility = hidden`, the popup is invisible (alpha=0
+everywhere). A user clicking in that 8px right-edge strip should hit the
+terminal underneath, not a phantom invisible window. We achieve this by
+toggling `WS_EX_TRANSPARENT` on the popup:
+
+- `visibility = hidden` → set `WS_EX_TRANSPARENT` (clicks fall through to
+  Surface).
+- Any other visibility state → clear `WS_EX_TRANSPARENT` (popup captures
+  clicks).
+
+Toggling done with `SetWindowLongW(GWL_EXSTYLE, ...)`. Cheap.
+
+In always-visible mode the popup never has `WS_EX_TRANSPARENT` — it's a real
+control, like every other Win32 scrollbar.
 
 | Event | Action |
 |---|---|
@@ -211,14 +337,17 @@ handler.
 ### Drag math
 
 ```zig
-const new_thumb_y = std.math.clamp(
-    mouse_y - drag_anchor,
-    0,
-    track_height - thumb_h,
-);
+// Track range: distance the thumb top-edge can travel.
+const track_range = track_height - thumb_h;
+
+// Edge case: if track_range == 0 (thumb fills track), there's nothing to
+// scroll — drag is a no-op. Same if total <= len.
+if (track_range <= 0 or total <= len) return;
+
+const new_thumb_y = std.math.clamp(mouse_y - drag_anchor, 0, track_range);
 const new_offset = @as(usize, @intFromFloat(
     @round(@as(f32, @floatFromInt(new_thumb_y)) /
-           @as(f32, @floatFromInt(track_height - thumb_h)) *
+           @as(f32, @floatFromInt(track_range)) *
            @as(f32, @floatFromInt(total - len))),
 ));
 ```
@@ -239,11 +368,18 @@ const new_offset = @as(usize, @intFromFloat(
 1. Launch ghostty.
 2. Send commands to fill 200 lines of scrollback.
 3. Send `Ctrl+Home` to scroll to top.
-4. Use `FindWindowEx` to locate the `GhosttyScrollbar` child of the surface
-   HWND; assert it exists and `IsWindowVisible` is true.
+4. Locate the scrollbar popup. Since it's an owned popup (not a child), use
+   `EnumThreadWindows` filtered by class name `GhosttyScrollbar` and
+   `GetWindow(hwnd, GW_OWNER)` matching the surface HWND. Assert it exists
+   and `IsWindowVisible` is true.
 5. Sleep 1.5s; assert the window is still present but the visibility state has
-   transitioned to `hidden` (we expose this via a `WM_USER+1` query message
-   that returns the state, used only by tests).
+   transitioned to `hidden`. State is exposed via a named test-only message:
+   ```zig
+   pub const WM_GHOSTTY_SCROLLBAR_QUERY = w32.WM_USER + 1;
+   ```
+   The popup's WndProc returns the current state as an `LRESULT` (0=hidden,
+   1=fading_in, 2=shown, 3=fading_out). The PowerShell test sends this via
+   `SendMessage` and asserts on the return value.
 6. Drag the thumb (synthesized `WM_LBUTTONDOWN` / `WM_MOUSEMOVE` /
    `WM_LBUTTONUP`); assert the visible cursor row changed.
 
@@ -269,9 +405,12 @@ Documented in the implementation commit message:
 - `src/apprt/win32/Surface.zig` — remove ~50 lines of native scrollbar code,
   add `scrollbar: ?*Scrollbar` field, route theme/resize/settings-change
   through to it, add `scrollToRow` helper.
-- `src/apprt/win32/win32.zig` — add the few extra Win32 bindings we need
-  (`TrackMouseEvent`, `TRACKMOUSEEVENT`, `RegOpenKeyExW`, `RegQueryValueExW`,
-  registry constants).
+- `src/apprt/win32/win32.zig` — add the Win32 bindings we need:
+  `TrackMouseEvent`, `TRACKMOUSEEVENT`, `RegOpenKeyExW`, `RegQueryValueExW`,
+  registry constants, `UpdateLayeredWindow`, `BLENDFUNCTION`, `ULW_ALPHA`,
+  `AC_SRC_OVER`, `AC_SRC_ALPHA`, `WS_EX_LAYERED`, `WS_EX_TRANSPARENT`,
+  `CreateCompatibleDC`, `CreateDIBSection`, `BITMAPINFO`, `SelectObject`,
+  `DeleteDC`, `DeleteObject`, `ClientToScreen`.
 - `test/win32/test_scrollbar.ps1` (new).
 - `test/win32/run_tests.ps1` — add the new test to the harness.
 
@@ -279,10 +418,15 @@ Documented in the implementation commit message:
 
 - **`DynamicScrollbars` registry semantics may differ from documented.**
   Verified empirically during implementation; flip the check if needed.
-- **Layered child window flicker** — mitigated by double-buffered paint with
-  a memory DC. Standard pattern.
 - **Surface grid size off-by-one when always-visible mode is active.** Caught
   by existing surface resize tests once we plumb the scrollbar width
   subtraction through `WM_SIZE`.
 - **Drag during fade-out** — handled explicitly: dragging pins state to
   `shown` until `WM_LBUTTONUP`.
+- **Layered popup position lag during fast surface resize** — `SetWindowPos`
+  on the popup happens after `WM_SIZE` returns, so during a live drag-resize
+  the popup can briefly trail the right edge by a frame. Acceptable; matches
+  how every other layered overlay (Steam, Discord) behaves.
+- **Multi-monitor DPI changes** — popup must be resized when the surface
+  moves to a different DPI. Handled by `WM_DPICHANGED` already received by
+  Surface (it forwards to the scrollbar to recompute widths).
