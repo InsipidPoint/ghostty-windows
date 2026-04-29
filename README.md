@@ -61,14 +61,24 @@ The goal is to track the upstream main branch while maintaining a native Windows
 - Desktop notifications (OSC 9, OSC 777)
 - Background opacity, fullscreen, window decorations toggle
 - Font size zoom with inheritance to new tabs/splits
-- Config hot-reload, scrollbar, dark mode chrome
+- Config hot-reload, scrollbar
+- DWM dark/light chrome and Win11 22H2+ caption color matching the
+  configured background
 - Shell integration for PowerShell (prompt marking, CWD, title)
+- Drag a file from Explorer onto the terminal to paste its path
+- Visual bell (taskbar flash) when BEL fires on an unfocused window
+- Taskbar flash when a command exits non-zero in an unfocused window
+- Confirm-close dialog when a programmatic close hits a tab with a
+  running command
+- Auto-update check against GitHub releases (rate-limited to once per
+  hour); clicking the "Update available" balloon opens the releases
+  page in your browser
+- Horizontal scroll wheels / trackpad gestures (`WM_MOUSEHWHEEL`)
 
 ### Platform-Specific Notes
 
 - Inspector (debug overlay) — acknowledged but no Win32 UI yet
 - `undo`/`redo` — macOS NSUndoManager only, no Win32 equivalent
-- `check_for_updates` — macOS Sparkle framework only
 - `secure_input` — macOS EnableSecureEventInput only
 - Release build + installer (MSI/MSIX) — not yet packaged
 
@@ -89,6 +99,10 @@ The executable is at `zig-out/bin/ghostty.exe`. Copy it to a Windows path and ru
 ```bash
 zig build -Dapp-runtime=win32 -Dtarget=x86_64-windows -Doptimize=ReleaseFast
 ```
+
+To debug a release build with stderr visible, add `-Dwindows-console=true`
+— it links against `/SUBSYSTEM:CONSOLE` instead of the default Windows
+GUI subsystem so the process gets a console attached.
 
 ## Keyboard Shortcuts
 
@@ -116,8 +130,8 @@ All keybindings are configurable via the `keybind` config option. These are the 
 | Previous tab | `Ctrl+Page Up` |
 | Go to tab 1–8 | `Ctrl+1` – `Ctrl+8` |
 | Go to last tab | `Ctrl+9` |
-| Move tab left | Configurable (`move_tab:-1`) |
-| Move tab right | Configurable (`move_tab:1`) |
+| Move tab left | `Ctrl+Shift+Page Up` |
+| Move tab right | `Ctrl+Shift+Page Down` |
 | Drag reorder | Mouse drag on tab |
 | Rename tab | Double-click tab |
 | Tab context menu | Right-click tab |
@@ -154,6 +168,17 @@ All keybindings are configurable via the `keybind` config option. These are the 
 | Increase font size | `Ctrl+=` |
 | Decrease font size | `Ctrl+-` |
 | Reset font size | `Ctrl+0` |
+
+### Mouse
+
+| Action | Gesture |
+|--------|---------|
+| Vertical scroll | Mouse wheel |
+| Horizontal scroll | Trackpad swipe / horizontal wheel |
+| Drag-select | Left-click drag |
+| Open URL | `Ctrl+Click` on a detected URL |
+| Middle-click paste | Middle button (configurable via `middle-click-action`) |
+| Drop file | Drag a file from Explorer onto the terminal — its path is pasted |
 
 ### Quick Terminal
 
@@ -222,7 +247,7 @@ A test harness runs from WSL2 using PowerShell automation:
 bash test/win32/ghostty_test.sh all
 ```
 
-25 automated tests cover: launch/close, window properties, keyboard input, multiple windows, clipboard, config loading, scrollbar, close confirmation, URL detection, notifications, window sizing, search bar, config reload, tabs (new/switch/close), opacity, command palette, tab drag reorder, inline tab rename, split panes, font zoom, fullscreen toggle, open config, and quick terminal.
+25+ automated tests cover: launch/close, window properties, keyboard input, multiple windows, clipboard, config loading, scrollbar, close confirmation, URL detection, notifications, window sizing, window resize (real assertion), search bar, config reload, tabs (new/switch/close), opacity, command palette, tab drag reorder, inline tab rename, split panes, font zoom, fullscreen toggle, open config, and quick terminal.
 
 Tab and split tests run in PowerShell sessions:
 
@@ -241,7 +266,20 @@ git fetch upstream
 git merge upstream/main
 ```
 
-Conflicts will mainly be in files where `.win32` switch arms were added. The `src/apprt/win32/` directory is entirely new code.
+`git rerere` is enabled in the local repo so previously-resolved
+conflict resolutions get re-applied automatically on subsequent merges.
+
+When resolving conflicts, default to **keep upstream** for any file
+outside `src/apprt/win32/`, `dist/windows/`, or `test/win32/`. The
+`.win32` switch arms (`.none, .win32 => void` and similar) need to be
+preserved in upstream switches that handle apprt variants.
+
+Files most likely to conflict on upstream merges:
+- `src/Surface.zig`, `src/config/Config.zig`, `src/font/discovery.zig`,
+  `src/font/DeferredFace.zig`, `src/font/backend.zig`
+- Switch-arm files: `src/apprt/runtime.zig`, `src/apprt.zig`,
+  `src/datastruct/split_tree.zig`, `src/input/Binding.zig`,
+  `src/font/face.zig`, `src/terminal/mouse.zig`
 
 ## License
 
