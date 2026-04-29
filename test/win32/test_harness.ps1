@@ -77,15 +77,29 @@ public class Win32Test {
     public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
     public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
 
     [DllImport("user32.dll")]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
+    public delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    public const uint GW_OWNER = 4;
+
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint WM_CLOSE = 0x0010;
+    public const uint WM_GHOSTTY_SCROLLBAR_QUERY = 0x0401;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT {
@@ -309,15 +323,75 @@ function Invoke-Kill {
     }
 }
 
+function Invoke-ScrollbarQuery {
+    # Find the GhosttyWindow (top-level). -Hwnd is the main window HWND.
+    $win = Find-GhosttyWindow -ProcessId $ProcessId -DirectHwnd $Hwnd
+    if (-not $win) {
+        Write-Error "No ghostty window found"
+        exit 1
+    }
+
+    $mainHwnd = $win.Handle
+
+    # Find the GhosttyTerminal child of the main window.
+    # The scrollbar popup is owned by the GhosttyTerminal HWND (child window),
+    # not by the top-level GhosttyWindow.
+    $terminalHwnd = $null
+    $childCb = [Win32Test+EnumChildProc]{
+        param([IntPtr]$h, [IntPtr]$l)
+        $sb = New-Object System.Text.StringBuilder 256
+        [Win32Test]::GetClassName($h, $sb, 256) | Out-Null
+        if ($sb.ToString() -eq "GhosttyTerminal") {
+            $script:terminalHwnd = $h
+            return $false  # stop enumeration
+        }
+        return $true
+    }
+    [Win32Test]::EnumChildWindows($mainHwnd, $childCb, [IntPtr]::Zero) | Out-Null
+
+    if ($null -eq $terminalHwnd) {
+        Write-Error "GhosttyTerminal child not found under main window"
+        exit 1
+    }
+
+    # Enumerate all top-level windows to find a GhosttyScrollbar whose
+    # owner (GW_OWNER) is the GhosttyTerminal HWND we just found.
+    $scrollbarHwnd = $null
+    $enumCb = [Win32Test+EnumWindowsProc]{
+        param([IntPtr]$h, [IntPtr]$l)
+        $sb = New-Object System.Text.StringBuilder 256
+        [Win32Test]::GetClassName($h, $sb, 256) | Out-Null
+        if ($sb.ToString() -eq "GhosttyScrollbar") {
+            $owner = [Win32Test]::GetWindow($h, [Win32Test]::GW_OWNER)
+            if ($owner -eq $script:terminalHwnd) {
+                $script:scrollbarHwnd = $h
+                return $false  # stop enumeration
+            }
+        }
+        return $true
+    }
+    [Win32Test]::EnumWindows($enumCb, [IntPtr]::Zero) | Out-Null
+
+    if ($null -eq $scrollbarHwnd) {
+        Write-Output "STATE=NOT_FOUND"
+        exit 1
+    }
+
+    # Send WM_GHOSTTY_SCROLLBAR_QUERY and read the returned visibility state.
+    $result = [Win32Test]::SendMessage($scrollbarHwnd, [Win32Test]::WM_GHOSTTY_SCROLLBAR_QUERY, [IntPtr]::Zero, [IntPtr]::Zero)
+    Write-Output "STATE=$([long]$result)"
+}
+
 # Dispatch
 switch ($Action.ToLower()) {
-    "launch"     { Invoke-Launch }
-    "screenshot" { Invoke-Screenshot }
-    "sendkeys"   { Invoke-SendKeys }
-    "sendtext"   { Invoke-SendText }
-    "check"      { Invoke-Check }
-    "close"      { Invoke-Close }
-    "resize"     { Invoke-Resize }
-    "kill"       { Invoke-Kill }
-    default      { Write-Error "Unknown action: $Action"; exit 1 }
+    "launch"          { Invoke-Launch }
+    "screenshot"      { Invoke-Screenshot }
+    "sendkeys"        { Invoke-SendKeys }
+    "sendtext"        { Invoke-SendText }
+    "check"           { Invoke-Check }
+    "close"           { Invoke-Close }
+    "resize"          { Invoke-Resize }
+    "kill"            { Invoke-Kill }
+    "scrollbar-query" { Invoke-ScrollbarQuery }
+    default           { Write-Error "Unknown action: $Action"; exit 1 }
 }
