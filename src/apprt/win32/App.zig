@@ -855,7 +855,6 @@ pub fn performAction(
         .renderer_health,
         .key_sequence,
         .key_table,
-        .toggle_visibility,
         .pwd,
         .color_change,
         .cell_size,
@@ -871,6 +870,32 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .toggle_visibility => {
+            // Hide all visible top-level Ghostty windows; if any are
+            // already hidden, show + restore them. Equivalent to macOS
+            // NSApp hide / show.
+            var any_visible = false;
+            for (self.windows.items) |w| {
+                if (w.hwnd) |h| {
+                    if (w32.IsWindowVisible_(h) != 0) {
+                        any_visible = true;
+                        break;
+                    }
+                }
+            }
+            for (self.windows.items) |w| {
+                if (w.hwnd) |h| {
+                    if (any_visible) {
+                        _ = w32.ShowWindow(h, w32.SW_HIDE);
+                    } else {
+                        _ = w32.ShowWindow(h, w32.SW_SHOWNOACTIVATE);
+                    }
+                }
+            }
+            // The quick terminal manages its own visibility separately.
+            return true;
+        },
 
         .float_window => {
             // Toggle WS_EX_TOPMOST so the window stays above non-topmost

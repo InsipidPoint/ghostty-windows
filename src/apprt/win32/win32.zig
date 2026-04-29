@@ -732,9 +732,13 @@ pub extern "user32" fn MoveWindow(
     bRepaint: i32,
 ) callconv(.winapi) i32;
 
-pub extern "user32" fn IsWindowVisible_(
-    hWnd: HWND,
-) callconv(.winapi) i32;
+// Imported under an underscore-suffixed Zig name to avoid colliding
+// with `std.os.windows.user32.IsWindowVisible`. The `@extern` builtin
+// pins the actual import name to "IsWindowVisible".
+pub const IsWindowVisible_: *const fn (HWND) callconv(.winapi) i32 = @extern(
+    *const fn (HWND) callconv(.winapi) i32,
+    .{ .name = "IsWindowVisible", .library_name = "user32" },
+);
 
 pub extern "gdi32" fn SetBkColor(
     hdc: HDC,
