@@ -118,6 +118,37 @@ pub const InitOptions = struct {
     is_quick_terminal: bool = false,
 };
 
+/// Apply DWM dark/light + caption color based on the configured
+/// background. Light vs dark is decided by luminance; CAPTION_COLOR
+/// is silently ignored on Windows 10.
+fn applyChromeTheme(hwnd: w32.HWND, bg: anytype) void {
+    const luminance: f32 = (0.2126 * @as(f32, @floatFromInt(bg.r)) +
+        0.7152 * @as(f32, @floatFromInt(bg.g)) +
+        0.0722 * @as(f32, @floatFromInt(bg.b))) / 255.0;
+    const dark_mode: u32 = if (luminance < 0.5) 1 else 0;
+    _ = w32.DwmSetWindowAttribute(
+        hwnd,
+        w32.DWMWA_USE_IMMERSIVE_DARK_MODE,
+        @ptrCast(&dark_mode),
+        @sizeOf(u32),
+    );
+    const caption_color: u32 = (@as(u32, bg.r)) | (@as(u32, bg.g) << 8) | (@as(u32, bg.b) << 16);
+    _ = w32.DwmSetWindowAttribute(
+        hwnd,
+        w32.DWMWA_CAPTION_COLOR,
+        @ptrCast(&caption_color),
+        @sizeOf(u32),
+    );
+}
+
+/// Called from App.config_change so the title bar tracks live config
+/// reloads (background color in particular).
+pub fn onConfigChange(self: *Window) void {
+    if (self.hwnd) |hwnd| {
+        applyChromeTheme(hwnd, self.app.config.background);
+    }
+}
+
 /// Initialize the Window by creating the top-level HWND and tab bar font.
 pub fn init(self: *Window, app: *App, options: InitOptions) !void {
     self.* = .{
@@ -179,31 +210,7 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
     // Store the Window pointer in GWLP_USERDATA for the WndProc.
     _ = w32.SetWindowLongPtrW(hwnd, w32.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 
-    // Enable dark or light window chrome based on the terminal's
-    // configured background color. Hardcoding dark mode looked off
-    // for users running light themes.
-    const bg = app.config.background;
-    const luminance: f32 = (0.2126 * @as(f32, @floatFromInt(bg.r)) +
-        0.7152 * @as(f32, @floatFromInt(bg.g)) +
-        0.0722 * @as(f32, @floatFromInt(bg.b))) / 255.0;
-    const dark_mode: u32 = if (luminance < 0.5) 1 else 0;
-    _ = w32.DwmSetWindowAttribute(
-        hwnd,
-        w32.DWMWA_USE_IMMERSIVE_DARK_MODE,
-        @ptrCast(&dark_mode),
-        @sizeOf(u32),
-    );
-
-    // On Windows 11 22H2+, also color the title bar to match the
-    // terminal background. DWMWA_CAPTION_COLOR is COLORREF (0x00BBGGRR);
-    // older Windows builds ignore the unknown attribute.
-    const caption_color: u32 = (@as(u32, bg.r)) | (@as(u32, bg.g) << 8) | (@as(u32, bg.b) << 16);
-    _ = w32.DwmSetWindowAttribute(
-        hwnd,
-        w32.DWMWA_CAPTION_COLOR,
-        @ptrCast(&caption_color),
-        @sizeOf(u32),
-    );
+    applyChromeTheme(hwnd, app.config.background);
 
     // Apply dark theme to common controls (scrollbar, etc.).
     _ = w32.SetWindowTheme(

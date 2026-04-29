@@ -462,6 +462,11 @@ pub fn performAction(
                 const bg = new_config.background;
                 self.bg_brush = w32.CreateSolidBrush(w32.RGB(bg.r, bg.g, bg.b));
 
+                // Refresh DWM chrome (dark/light, caption color) on
+                // every live window so a config reload that changes
+                // the background color updates the title bar.
+                for (self.windows.items) |w| w.onConfigChange();
+
                 // Update quick terminal config.
                 if (self.quick_terminal) |qt| {
                     qt.onConfigChange(&self.config);
