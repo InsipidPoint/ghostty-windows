@@ -1411,10 +1411,20 @@ pub fn handleResize(self: *Surface, width: u32, height: u32) void {
     // Skip zero-size events (minimized windows).
     if (width == 0 or height == 0) return;
 
-    self.width = width;
     self.height = height;
 
-    // Reposition popups if visible
+    // Pre-flight the scrollbar so we know whether to subtract its width.
+    // This must happen before sizeCallback so the grid gets the right width.
+    var grid_width = width;
+    if (self.scrollbar) |sb| {
+        const sub = sb.repositionAndResize();
+        if (sub > 0 and grid_width > @as(u32, @intCast(sub))) {
+            grid_width -= @as(u32, @intCast(sub));
+        }
+    }
+    self.width = grid_width;
+
+    // Reposition popups with corrected width.
     if (self.search_active) self.positionSearchBar();
     if (self.palette_active) self.positionCommandPalette();
 
@@ -1422,13 +1432,10 @@ pub fn handleResize(self: *Surface, width: u32, height: u32) void {
 
     // Notify the core surface so it recalculates the terminal grid,
     // updates the renderer viewport, and sends SIGWINCH to the PTY.
-    self.core_surface.sizeCallback(.{ .width = width, .height = height }) catch |err| {
+    self.core_surface.sizeCallback(.{ .width = grid_width, .height = height }) catch |err| {
         log.err("sizeCallback error: {}", .{err});
         return;
     };
-
-    // Reposition the scrollbar popup to match the new surface geometry.
-    if (self.scrollbar) |sb| _ = sb.repositionAndResize();
 
     // During live resize (user dragging the border), block until the
     // renderer has presented one frame at the new size. This prevents

@@ -96,6 +96,44 @@ pub fn parseMode(value: ?u32) Mode {
     return .overlay;
 }
 
+/// Read the raw DynamicScrollbars DWORD from
+/// HKCU\Control Panel\Accessibility. Returns null on any error or absence.
+pub fn readDynamicScrollbars() ?u32 {
+    const subkey = std.unicode.utf8ToUtf16LeStringLiteral("Control Panel\\Accessibility");
+    const valname = std.unicode.utf8ToUtf16LeStringLiteral("DynamicScrollbars");
+
+    var hkey: w32.HKEY = undefined;
+    const open_ret = w32.RegOpenKeyExW(
+        w32.HKEY_CURRENT_USER,
+        subkey,
+        0,
+        w32.KEY_READ,
+        &hkey,
+    );
+    if (open_ret != w32.ERROR_SUCCESS) return null;
+    defer _ = w32.RegCloseKey(hkey);
+
+    var kind: u32 = 0;
+    var val: u32 = 0;
+    var cb: u32 = @sizeOf(u32);
+    const query_ret = w32.RegQueryValueExW(
+        hkey,
+        valname,
+        null,
+        &kind,
+        @ptrCast(&val),
+        &cb,
+    );
+    if (query_ret != w32.ERROR_SUCCESS) return null;
+    if (kind != w32.REG_DWORD) return null;
+    return val;
+}
+
+/// Read the current mode from the registry.
+pub fn readMode() Mode {
+    return parseMode(readDynamicScrollbars());
+}
+
 // ---------------------------------------------------------------------------
 // Scrollbar window class + struct
 // ---------------------------------------------------------------------------
@@ -188,6 +226,10 @@ pub const Scrollbar = struct {
 
         self.hwnd = hwnd;
 
+        // Read the OS mode before the first repositionAndResize so that
+        // the correct width is used from the very first layout pass.
+        self.mode = readMode();
+
         // Position and size the popup against the owner's current client
         // area. Without this, the popup stays at the (0,0,1,1) placeholder
         // until the first WM_SIZE fires on the owner — making the scrollbar
@@ -213,20 +255,38 @@ pub const Scrollbar = struct {
         self.first_update = false;
 
         if (was_first) {
-            // Initial state — silent. In overlay mode start hidden + transparent.
-            // The popup is already painted with .zero placeholder (alpha=0 = invisible).
-            self.visibility = .hidden;
-            self.fade = 0;
-            self.setTransparent();
-            self.repaint(); // Re-paint with new alpha=0 + transparent style.
+            switch (self.mode) {
+                .overlay => {
+                    // Initial state — silent. Start hidden + transparent.
+                    // The popup is already painted with .zero placeholder (alpha=0 = invisible).
+                    self.visibility = .hidden;
+                    self.fade = 0;
+                    self.setTransparent();
+                    self.repaint(); // Re-paint with new alpha=0 + transparent style.
+                },
+                .always_visible => {
+                    // Always-visible: show immediately at full opacity.
+                    self.visibility = .shown;
+                    self.fade = 255;
+                    self.clearTransparent();
+                    self.repaint();
+                },
+            }
             return;
         }
 
         if (changed) {
-            if (self.visibility == .hidden or self.visibility == .fading_out) {
-                self.startFadeIn();
+            switch (self.mode) {
+                .overlay => {
+                    if (self.visibility == .hidden or self.visibility == .fading_out) {
+                        self.startFadeIn();
+                    }
+                    self.restartIdleTimer();
+                },
+                .always_visible => {
+                    // No fade logic — always shown at full opacity.
+                },
             }
-            self.restartIdleTimer();
             self.repaint();
         }
     }
@@ -256,9 +316,12 @@ pub const Scrollbar = struct {
 
         self.repaint();
 
-        // Hard-coded always-visible width-to-subtract for Task 5; Task 8 makes
-        // this mode-aware (returns 0 in overlay mode).
-        return width;
+        // Return the width that the caller should subtract from the grid area.
+        // Always-visible steals a column of grid space; overlay floats on top.
+        return switch (self.mode) {
+            .always_visible => width,
+            .overlay => 0,
+        };
     }
 
     /// Show or hide the popup when the owner surface is shown/hidden.
@@ -279,8 +342,13 @@ pub const Scrollbar = struct {
     }
 
     fn currentWidth(self: *const Scrollbar) i32 {
-        // Hard-coded for Task 5; Task 8 makes this mode-aware.
-        return self.dpiScaled(SCROLLBAR_WIDTH_BASE);
+        return switch (self.mode) {
+            .always_visible => self.dpiScaled(SCROLLBAR_WIDTH_BASE),
+            .overlay => if (self.hover or self.dragging)
+                self.dpiScaled(SCROLLBAR_WIDTH_BASE)
+            else
+                self.dpiScaled(SCROLLBAR_WIDTH_OVERLAY_COLLAPSED),
+        };
     }
 
     fn repaint(self: *Scrollbar) void {
@@ -340,11 +408,17 @@ pub const Scrollbar = struct {
     fn drawBitmap(self: *Scrollbar, pixels: [*]u32, w: i32, h: i32) void {
         // Premultiplied BGRA. Layout per pixel: 0xAARRGGBB.
         // Overlay mode: track is fully transparent; only the thumb is painted.
+        // Always-visible mode: track is filled with the opaque background color.
+
+        const track_fill: u32 = switch (self.mode) {
+            .always_visible => packBGRA(self.bg, 255),
+            .overlay => 0,
+        };
 
         const total = w * h;
         var i: i32 = 0;
         while (i < total) : (i += 1) {
-            pixels[@intCast(i)] = 0; // fully transparent
+            pixels[@intCast(i)] = track_fill;
         }
 
         const min_h = self.dpiScaled(THUMB_MIN_HEIGHT_BASE);
@@ -366,7 +440,10 @@ pub const Scrollbar = struct {
         const base = if (self.dragging) ALPHA_DRAG
             else if (self.hover) ALPHA_HOVER
             else ALPHA_IDLE;
-        return effectiveAlpha(base, self.fade);
+        return switch (self.mode) {
+            .always_visible => base,
+            .overlay => effectiveAlpha(base, self.fade),
+        };
     }
 
     fn ensureLeaveTracking(self: *Scrollbar) void {
@@ -466,8 +543,29 @@ pub const Scrollbar = struct {
     /// Called on WM_SETTINGCHANGE. Returns true if a mode change
     /// requires the terminal grid to be re-flowed.
     pub fn onSettingsChange(self: *Scrollbar) bool {
-        _ = self;
-        return false; // No-op until Task 8.
+        const new_mode = readMode();
+        if (new_mode == self.mode) return false;
+
+        self.mode = new_mode;
+
+        // Apply the initial state for the new mode.
+        switch (new_mode) {
+            .overlay => {
+                self.visibility = .hidden;
+                self.fade = 0;
+                self.setTransparent();
+                self.repaint();
+            },
+            .always_visible => {
+                self.visibility = .shown;
+                self.fade = 255;
+                self.clearTransparent();
+                self.repaint();
+            },
+        }
+
+        // Mode changed — caller must reflow the grid (trigger WM_SIZE).
+        return true;
     }
 
     /// Update the DPI scale factor.
