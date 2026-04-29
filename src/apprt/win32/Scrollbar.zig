@@ -2,7 +2,13 @@
 //! docs/superpowers/specs/2026-04-29-win32-themed-scrollbar-design.md
 
 const std = @import("std");
+const builtin = @import("builtin");
+const w32 = @import("win32.zig");
+const terminal = @import("../../terminal/main.zig");
+const Surface = @import("Surface.zig");
 const testing = std.testing;
+
+const log = std.log.scoped(.win32_scrollbar);
 
 /// Computed thumb rectangle within the track.
 pub const ThumbRect = struct { y: i32, h: i32 };
@@ -74,6 +80,141 @@ pub fn parseMode(value: ?u32) Mode {
         return if (v == 0) .always_visible else .overlay;
     }
     return .overlay;
+}
+
+// ---------------------------------------------------------------------------
+// Scrollbar window class + struct
+// ---------------------------------------------------------------------------
+
+pub const WINDOW_CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral("GhosttyScrollbar");
+
+/// Test-only message: SendMessage(hwnd, WM_GHOSTTY_SCROLLBAR_QUERY, 0, 0)
+/// returns the current visibility state as an LRESULT.
+/// 0=hidden, 1=fading_in, 2=shown, 3=fading_out.
+pub const WM_GHOSTTY_SCROLLBAR_QUERY: u32 = w32.WM_USER + 1;
+
+pub const Visibility = enum(isize) {
+    hidden = 0,
+    fading_in = 1,
+    shown = 2,
+    fading_out = 3,
+};
+
+pub const Scrollbar = struct {
+    alloc: std.mem.Allocator,
+    surface: *Surface,
+    owner: w32.HWND,
+    hwnd: w32.HWND,
+
+    /// Latest scroll state from the core. Initially zero.
+    state: terminal.Scrollbar = .zero,
+    /// True until the first update() call — used to suppress fade-in on startup.
+    first_update: bool = true,
+
+    /// Current mode; re-read on WM_SETTINGCHANGE.
+    mode: Mode = .overlay,
+
+    /// Cached theme colors. Updated via setTheme.
+    bg: terminal.color.RGB = .{ .r = 0, .g = 0, .b = 0 },
+    fg: terminal.color.RGB = .{ .r = 255, .g = 255, .b = 255 },
+
+    /// DPI scale (1.0 at 96 DPI).
+    scale: f32 = 1.0,
+
+    /// Visibility state (overlay mode only).
+    visibility: Visibility = .hidden,
+    /// Fade alpha [0..255]. Multiplied into base_alpha at paint time.
+    fade: u8 = 0,
+
+    /// Hover tracking.
+    hover: bool = false,
+    /// Drag tracking.
+    dragging: bool = false,
+    drag_anchor: i32 = 0,
+
+    pub fn create(
+        alloc: std.mem.Allocator,
+        owner: w32.HWND,
+        surface: *Surface,
+    ) !*Scrollbar {
+        try registerClassOnce(surface.app.hinstance);
+
+        const self = try alloc.create(Scrollbar);
+        errdefer alloc.destroy(self);
+
+        self.* = .{
+            .alloc = alloc,
+            .surface = surface,
+            .owner = owner,
+            .hwnd = undefined,
+        };
+
+        // WS_EX_LAYERED — DWM-composited above OpenGL.
+        // WS_EX_NOACTIVATE — clicking us does not steal focus from the terminal.
+        // WS_EX_TOOLWINDOW — keep us out of the taskbar / Alt-Tab list.
+        const ex_style: u32 = w32.WS_EX_LAYERED | w32.WS_EX_NOACTIVATE | w32.WS_EX_TOOLWINDOW;
+        // WS_POPUP — owned popup, follows the surface in z-order.
+        const style: u32 = w32.WS_POPUP;
+
+        const hwnd = w32.CreateWindowExW(
+            ex_style,
+            WINDOW_CLASS_NAME,
+            std.unicode.utf8ToUtf16LeStringLiteral(""),
+            style,
+            0, 0, 1, 1, // placeholder rect — repositionAndResize() sets the real one
+            owner, // owner (popup, not parent)
+            null,
+            surface.app.hinstance,
+            null,
+        ) orelse return error.Win32Error;
+        errdefer _ = w32.DestroyWindow(hwnd);
+
+        // Stash self pointer in GWLP_USERDATA so the WndProc can find us.
+        _ = w32.SetWindowLongPtrW(hwnd, w32.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
+
+        self.hwnd = hwnd;
+        return self;
+    }
+
+    pub fn destroy(self: *Scrollbar) void {
+        _ = w32.DestroyWindow(self.hwnd);
+        self.alloc.destroy(self);
+    }
+};
+
+var class_registered: bool = false;
+
+fn registerClassOnce(hinstance: w32.HINSTANCE) !void {
+    if (class_registered) return;
+
+    const wc = w32.WNDCLASSEXW{
+        .cbSize = @sizeOf(w32.WNDCLASSEXW),
+        .style = 0,
+        .lpfnWndProc = scrollbarWndProc,
+        .cbClsExtra = 0,
+        .cbWndExtra = 0,
+        .hInstance = hinstance,
+        .hIcon = null,
+        .hCursor = w32.LoadCursorW(null, w32.IDC_ARROW),
+        .hbrBackground = null, // we paint via UpdateLayeredWindow
+        .lpszMenuName = null,
+        .lpszClassName = WINDOW_CLASS_NAME,
+        .hIconSm = null,
+    };
+
+    if (w32.RegisterClassExW(&wc) == 0) return error.Win32Error;
+    class_registered = true;
+}
+
+fn scrollbarWndProc(
+    hwnd: w32.HWND,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) callconv(.winapi) isize {
+    // Stub for now. Forwards everything to DefWindowProc until subsequent
+    // tasks add real handlers.
+    return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 // ---------------------------------------------------------------------------
