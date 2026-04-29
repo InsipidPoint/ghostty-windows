@@ -438,6 +438,24 @@ pub fn getTitle(self: *const Surface) ?[:0]const u8 {
 
 pub fn close(self: *Surface, process_active: bool) void {
     log.debug("Surface.close called process_active={}", .{process_active});
+    // If a shell command is still running, prompt the user before
+    // closing. Without this, Ctrl+Shift+W silently kills the running
+    // process — macOS shows the same kind of dialog for parity. We
+    // only prompt for programmatic close paths; the X-button path
+    // bypasses needsConfirmQuit entirely (cmd.exe lacks OSC 133 so
+    // the core would return process_active=true unconditionally).
+    if (process_active) {
+        const parent_hwnd = self.parent_window.hwnd;
+        const result = w32.MessageBoxW(
+            parent_hwnd,
+            std.unicode.utf8ToUtf16LeStringLiteral(
+                "A process is still running in this terminal.\nClose anyway?",
+            ),
+            std.unicode.utf8ToUtf16LeStringLiteral("Ghostty"),
+            w32.MB_OKCANCEL | w32.MB_ICONWARNING | w32.MB_DEFBUTTON2,
+        );
+        if (result != w32.IDOK) return;
+    }
     // Defer destruction to the message loop via PostMessage.
     // This avoids calling surface.deinit() from inside core_surface
     // callbacks (during tick), which causes reentrancy and crashes.
