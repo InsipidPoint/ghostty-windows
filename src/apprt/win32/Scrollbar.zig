@@ -181,6 +181,13 @@ pub const Scrollbar = struct {
         _ = w32.SetWindowLongPtrW(hwnd, w32.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 
         self.hwnd = hwnd;
+
+        // Position and size the popup against the owner's current client
+        // area. Without this, the popup stays at the (0,0,1,1) placeholder
+        // until the first WM_SIZE fires on the owner — making the scrollbar
+        // invisible until the user resizes the window.
+        _ = self.repositionAndResize();
+
         return self;
     }
 
@@ -191,14 +198,18 @@ pub const Scrollbar = struct {
 
     /// Update the cached scroll state and repaint if anything changed.
     pub fn update(self: *Scrollbar, state: terminal.Scrollbar) void {
-        const changed = !self.first_update and (
+        const was_first = self.first_update;
+        const changed =
             self.state.total != state.total or
             self.state.offset != state.offset or
-            self.state.len != state.len
-        );
+            self.state.len != state.len;
         self.state = state;
         self.first_update = false;
-        if (changed) self.repaint();
+        // Always paint the first delivery: at create time we painted with
+        // the .zero placeholder, which doesn't match the real scrollback.
+        // Task 7 will gate this behind mode (overlay starts hidden via
+        // alpha=0; always-visible paints normally).
+        if (was_first or changed) self.repaint();
     }
 
     /// Reposition and resize the popup to stay glued to the surface.
