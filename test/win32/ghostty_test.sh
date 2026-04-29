@@ -480,8 +480,10 @@ test_scrollbar() {
     ps -Action sendkeys -ProcessId "$pid" -Keys "{ENTER}"
     sleep 3
 
-    # Scroll to top — this should trigger the scrollbar to fade in.
-    ps -Action sendkeys -ProcessId "$pid" -Keys "^{HOME}"
+    # Scroll to top — Ghostty's default binding for scroll_to_top is
+    # Shift+Home. This dispatches setScrollbar(), which paints and (in
+    # overlay mode) starts the fade-in.
+    ps -Action sendkeys -ProcessId "$pid" -Keys "+{HOME}"
     sleep 0.5
 
     # Query scrollbar state — expect fading_in (1) or shown (2).

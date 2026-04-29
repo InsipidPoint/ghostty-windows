@@ -331,39 +331,20 @@ function Invoke-ScrollbarQuery {
         exit 1
     }
 
-    $mainHwnd = $win.Handle
+    $script:mainHwnd = [IntPtr]$win.Handle
 
-    # Find the GhosttyTerminal child of the main window.
-    # The scrollbar popup is owned by the GhosttyTerminal HWND (child window),
-    # not by the top-level GhosttyWindow.
-    $terminalHwnd = $null
-    $childCb = [Win32Test+EnumChildProc]{
-        param([IntPtr]$h, [IntPtr]$l)
-        $sb = New-Object System.Text.StringBuilder 256
-        [Win32Test]::GetClassName($h, $sb, 256) | Out-Null
-        if ($sb.ToString() -eq "GhosttyTerminal") {
-            $script:terminalHwnd = $h
-            return $false  # stop enumeration
-        }
-        return $true
-    }
-    [Win32Test]::EnumChildWindows($mainHwnd, $childCb, [IntPtr]::Zero) | Out-Null
-
-    if ($null -eq $terminalHwnd) {
-        Write-Error "GhosttyTerminal child not found under main window"
-        exit 1
-    }
-
-    # Enumerate all top-level windows to find a GhosttyScrollbar whose
-    # owner (GW_OWNER) is the GhosttyTerminal HWND we just found.
-    $scrollbarHwnd = $null
+    # Win32 traverses up to the top-level ancestor for popup ownership, so
+    # even though Scrollbar.create() is called with the GhosttyTerminal child
+    # HWND, the resulting popup's effective owner is the top-level
+    # GhosttyWindow. Look for a GhosttyScrollbar whose GW_OWNER is mainHwnd.
+    $script:scrollbarHwnd = $null
     $enumCb = [Win32Test+EnumWindowsProc]{
         param([IntPtr]$h, [IntPtr]$l)
         $sb = New-Object System.Text.StringBuilder 256
         [Win32Test]::GetClassName($h, $sb, 256) | Out-Null
         if ($sb.ToString() -eq "GhosttyScrollbar") {
             $owner = [Win32Test]::GetWindow($h, [Win32Test]::GW_OWNER)
-            if ($owner -eq $script:terminalHwnd) {
+            if ($owner.ToInt64() -eq $script:mainHwnd.ToInt64()) {
                 $script:scrollbarHwnd = $h
                 return $false  # stop enumeration
             }
