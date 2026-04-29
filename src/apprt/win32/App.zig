@@ -1350,7 +1350,7 @@ fn surfaceWndProc(
     msg: u32,
     wparam: usize,
     lparam: isize,
-) callconv(.c) isize {
+) callconv(.winapi) isize {
     const userdata = w32.GetWindowLongPtrW(hwnd, w32.GWLP_USERDATA);
     const surface: *Surface = if (userdata != 0)
         @ptrFromInt(@as(usize, @bitCast(userdata)))
@@ -1603,7 +1603,7 @@ fn msgWndProc(
     msg: u32,
     wparam: usize,
     lparam: isize,
-) callconv(.c) isize {
+) callconv(.winapi) isize {
     const userdata = w32.GetWindowLongPtrW(hwnd, w32.GWLP_USERDATA);
     if (userdata == 0) return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
     const app: *App = @ptrFromInt(@as(usize, @bitCast(userdata)));

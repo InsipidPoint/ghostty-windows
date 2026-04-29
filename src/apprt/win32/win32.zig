@@ -37,7 +37,7 @@ pub const MSG = extern struct {
 pub const WNDCLASSEXW = extern struct {
     cbSize: u32,
     style: u32,
-    lpfnWndProc: *const fn (HWND, u32, usize, isize) callconv(.c) isize,
+    lpfnWndProc: *const fn (HWND, u32, usize, isize) callconv(.winapi) isize,
     cbClsExtra: i32,
     cbWndExtra: i32,
     hInstance: ?HINSTANCE,
@@ -289,7 +289,7 @@ pub const IDI_APPLICATION: usize = 32512;
 pub extern "user32" fn LoadIconW(
     hInstance: ?HINSTANCE,
     lpIconName: usize,
-) callconv(.c) ?HICON;
+) callconv(.winapi) ?HICON;
 
 // Standard cursor IDs (MAKEINTRESOURCE values)
 pub const IDC_ARROW: usize = 32512;
@@ -311,12 +311,12 @@ pub const IDC_APPSTARTING: usize = 32650;
 
 pub extern "user32" fn RegisterClassExW(
     *const WNDCLASSEXW,
-) callconv(.c) u16;
+) callconv(.winapi) u16;
 
 pub extern "user32" fn UnregisterClassW(
     lpClassName: [*:0]const u16,
     hInstance: ?HINSTANCE,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn CreateWindowExW(
     dwExStyle: u32,
@@ -331,142 +331,142 @@ pub extern "user32" fn CreateWindowExW(
     hMenu: ?HMENU,
     hInstance: ?HINSTANCE,
     lpParam: ?*anyopaque,
-) callconv(.c) ?HWND;
+) callconv(.winapi) ?HWND;
 
 pub extern "user32" fn ShowWindow(
     hWnd: HWND,
     nCmdShow: i32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn UpdateWindow(
     hWnd: HWND,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn GetMessageW(
     lpMsg: *MSG,
     hWnd: ?HWND,
     wMsgFilterMin: u32,
     wMsgFilterMax: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn TranslateMessage(
     lpMsg: *const MSG,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn DispatchMessageW(
     lpMsg: *const MSG,
-) callconv(.c) isize;
+) callconv(.winapi) isize;
 
 pub extern "user32" fn PostMessageW(
     hWnd: HWND,
     Msg: u32,
     wParam: usize,
     lParam: isize,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn DestroyWindow(
     hWnd: HWND,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn DefWindowProcW(
     hWnd: HWND,
     Msg: u32,
     wParam: usize,
     lParam: isize,
-) callconv(.c) isize;
+) callconv(.winapi) isize;
 
 pub extern "user32" fn PostQuitMessage(
     nExitCode: i32,
-) callconv(.c) void;
+) callconv(.winapi) void;
 
 pub extern "user32" fn GetClientRect(
     hWnd: HWND,
     lpRect: *RECT,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn GetDC(
     hWnd: ?HWND,
-) callconv(.c) ?HDC;
+) callconv(.winapi) ?HDC;
 
 pub extern "user32" fn ReleaseDC(
     hWnd: ?HWND,
     hDC: HDC,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn SetWindowLongPtrW(
     hWnd: HWND,
     nIndex: i32,
     dwNewLong: isize,
-) callconv(.c) isize;
+) callconv(.winapi) isize;
 
 pub extern "user32" fn GetWindowLongPtrW(
     hWnd: HWND,
     nIndex: i32,
-) callconv(.c) isize;
+) callconv(.winapi) isize;
 
 pub const GetCursorPos_ = struct {
     extern "user32" fn GetCursorPos(
         lpPoint: *POINT,
-    ) callconv(.c) i32;
+    ) callconv(.winapi) i32;
 }.GetCursorPos;
 
 pub extern "user32" fn ScreenToClient(
     hWnd: HWND,
     lpPoint: *POINT,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn ClientToScreen(
     hWnd: HWND,
     lpPoint: *POINT,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn GetParent(
     hWnd: HWND,
-) callconv(.c) ?HWND;
+) callconv(.winapi) ?HWND;
 
 pub extern "user32" fn AdjustWindowRectEx(
     lpRect: *RECT,
     dwStyle: u32,
     bMenu: i32,
     dwExStyle: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn GetDpiForWindow(
     hWnd: HWND,
-) callconv(.c) u32;
+) callconv(.winapi) u32;
 
 pub extern "user32" fn MessageBeep(
     uType: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn SetWindowTextW(
     hWnd: HWND,
     lpString: [*:0]const u16,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn ValidateRect(
     hWnd: ?HWND,
     lpRect: ?*const RECT,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn InvalidateRect(
     hWnd: ?HWND,
     lpRect: ?*const RECT,
     bErase: i32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn LoadCursorW(
     hInstance: ?HINSTANCE,
     lpCursorName: usize,
-) callconv(.c) ?HCURSOR;
+) callconv(.winapi) ?HCURSOR;
 
 pub extern "user32" fn GetKeyState(
     nVirtKey: i32,
-) callconv(.c) i16;
+) callconv(.winapi) i16;
 
 pub extern "kernel32" fn GetModuleHandleW(
     lpModuleName: ?[*:0]const u16,
-) callconv(.c) ?HINSTANCE;
+) callconv(.winapi) ?HINSTANCE;
 
 pub extern "user32" fn ToUnicode(
     wVirtKey: u32,
@@ -475,28 +475,28 @@ pub extern "user32" fn ToUnicode(
     pwszBuff: [*]u16,
     cchBuff: i32,
     wFlags: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn GetKeyboardState(
     lpKeyState: *[256]u8,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn SetCapture(
     hWnd: HWND,
-) callconv(.c) ?HWND;
+) callconv(.winapi) ?HWND;
 
-pub extern "user32" fn ReleaseCapture() callconv(.c) i32;
+pub extern "user32" fn ReleaseCapture() callconv(.winapi) i32;
 
 pub extern "user32" fn GetWindowLongW(
     hWnd: HWND,
     nIndex: i32,
-) callconv(.c) u32;
+) callconv(.winapi) u32;
 
 pub extern "user32" fn SetWindowLongW(
     hWnd: HWND,
     nIndex: i32,
     dwNewLong: u32,
-) callconv(.c) u32;
+) callconv(.winapi) u32;
 
 pub extern "user32" fn SetWindowPos(
     hWnd: HWND,
@@ -506,30 +506,30 @@ pub extern "user32" fn SetWindowPos(
     cx: i32,
     cy: i32,
     uFlags: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn GetWindowRect(
     hWnd: HWND,
     lpRect: *RECT,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn MonitorFromWindow(
     hwnd: HWND,
     dwFlags: u32,
-) callconv(.c) HMONITOR;
+) callconv(.winapi) HMONITOR;
 
 pub extern "user32" fn GetMonitorInfoW(
     hMonitor: HMONITOR,
     lpmi: *MONITORINFO,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn IsZoomed(
     hWnd: HWND,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn SetCursor(
     hCursor: HCURSOR,
-) callconv(.c) ?HCURSOR;
+) callconv(.winapi) ?HCURSOR;
 
 pub extern "shell32" fn ShellExecuteW(
     hwnd: ?HWND,
@@ -538,26 +538,26 @@ pub extern "shell32" fn ShellExecuteW(
     lpParameters: ?[*:0]const u16,
     lpDirectory: ?[*:0]const u16,
     nShowCmd: i32,
-) callconv(.c) isize;
+) callconv(.winapi) isize;
 
 pub extern "user32" fn SetLayeredWindowAttributes(
     hwnd: HWND,
     crKey: u32,
     bAlpha: u8,
     dwFlags: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn SetTimer(
     hWnd: ?HWND,
     nIDEvent: usize,
     uElapse: u32,
     lpTimerFunc: ?*const anyopaque,
-) callconv(.c) usize;
+) callconv(.winapi) usize;
 
 pub extern "user32" fn KillTimer(
     hWnd: ?HWND,
     uIDEvent: usize,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Synchronization API
@@ -573,31 +573,31 @@ pub extern "kernel32" fn CreateEventW(
     bManualReset: i32,
     bInitialState: i32,
     lpName: ?[*:0]const u16,
-) callconv(.c) ?HANDLE;
+) callconv(.winapi) ?HANDLE;
 
 pub extern "kernel32" fn SetEvent(
     hEvent: HANDLE,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "kernel32" fn ResetEvent(
     hEvent: HANDLE,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "kernel32" fn WaitForSingleObject(
     hHandle: HANDLE,
     dwMilliseconds: u32,
-) callconv(.c) u32;
+) callconv(.winapi) u32;
 
 pub extern "kernel32" fn CloseHandle(
     hObject: HANDLE,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // Stock object indices for GetStockObject
 pub const BLACK_BRUSH: i32 = 4;
 
 pub extern "gdi32" fn GetStockObject(
     i: i32,
-) callconv(.c) ?*anyopaque;
+) callconv(.winapi) ?*anyopaque;
 
 /// COLORREF is 0x00BBGGRR (blue in high byte, red in low byte).
 pub fn RGB(r: u8, g: u8, b: u8) u32 {
@@ -606,17 +606,17 @@ pub fn RGB(r: u8, g: u8, b: u8) u32 {
 
 pub extern "gdi32" fn CreateSolidBrush(
     color: u32,
-) callconv(.c) ?HBRUSH;
+) callconv(.winapi) ?HBRUSH;
 
 pub extern "gdi32" fn DeleteObject(
     ho: *anyopaque,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn FillRect(
     hDC: HDC,
     lprc: *const RECT,
     hbr: HBRUSH,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Clipboard API
@@ -630,37 +630,37 @@ pub const GMEM_MOVEABLE: u32 = 0x0002;
 
 pub extern "user32" fn OpenClipboard(
     hWndNewOwner: ?HWND,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
-pub extern "user32" fn CloseClipboard() callconv(.c) i32;
+pub extern "user32" fn CloseClipboard() callconv(.winapi) i32;
 
-pub extern "user32" fn EmptyClipboard() callconv(.c) i32;
+pub extern "user32" fn EmptyClipboard() callconv(.winapi) i32;
 
 pub extern "user32" fn GetClipboardData(
     uFormat: u32,
-) callconv(.c) ?*anyopaque;
+) callconv(.winapi) ?*anyopaque;
 
 pub extern "user32" fn SetClipboardData(
     uFormat: u32,
     hMem: *anyopaque,
-) callconv(.c) ?*anyopaque;
+) callconv(.winapi) ?*anyopaque;
 
 pub extern "kernel32" fn GlobalAlloc(
     uFlags: u32,
     dwBytes: usize,
-) callconv(.c) ?*anyopaque;
+) callconv(.winapi) ?*anyopaque;
 
 pub extern "kernel32" fn GlobalLock(
     hMem: *anyopaque,
-) callconv(.c) ?[*]u8;
+) callconv(.winapi) ?[*]u8;
 
 pub extern "kernel32" fn GlobalUnlock(
     hMem: *anyopaque,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "kernel32" fn GlobalFree(
     hMem: *anyopaque,
-) callconv(.c) ?*anyopaque;
+) callconv(.winapi) ?*anyopaque;
 
 // -----------------------------------------------------------------------
 // Edit control / child window API
@@ -682,17 +682,17 @@ pub const WS_BORDER: u32 = 0x00800000;
 
 pub extern "user32" fn SetFocus(
     hWnd: ?HWND,
-) callconv(.c) ?HWND;
+) callconv(.winapi) ?HWND;
 
 pub extern "user32" fn GetWindowTextW(
     hWnd: HWND,
     lpString: [*]u16,
     nMaxCount: i32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn GetWindowTextLengthW(
     hWnd: HWND,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn MoveWindow(
     hWnd: HWND,
@@ -701,21 +701,21 @@ pub extern "user32" fn MoveWindow(
     nWidth: i32,
     nHeight: i32,
     bRepaint: i32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn IsWindowVisible_(
     hWnd: HWND,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "gdi32" fn SetBkColor(
     hdc: HDC,
     color: u32,
-) callconv(.c) u32;
+) callconv(.winapi) u32;
 
 pub extern "gdi32" fn SetTextColor(
     hdc: HDC,
     color: u32,
-) callconv(.c) u32;
+) callconv(.winapi) u32;
 
 pub extern "gdi32" fn CreateFontW(
     cHeight: i32,
@@ -732,7 +732,7 @@ pub extern "gdi32" fn CreateFontW(
     iQuality: u32,
     iPitchAndFamily: u32,
     pszFaceName: ?[*:0]const u16,
-) callconv(.c) ?*anyopaque;
+) callconv(.winapi) ?*anyopaque;
 
 pub const WM_SETFONT: u32 = 0x0030;
 
@@ -741,7 +741,7 @@ pub extern "user32" fn SendMessageW(
     Msg: u32,
     wParam: usize,
     lParam: isize,
-) callconv(.c) isize;
+) callconv(.winapi) isize;
 
 // -----------------------------------------------------------------------
 // MessageBox API
@@ -761,7 +761,7 @@ pub extern "user32" fn MessageBoxW(
     lpText: [*:0]const u16,
     lpCaption: [*:0]const u16,
     uType: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Scrollbar API
@@ -801,13 +801,13 @@ pub extern "user32" fn SetScrollInfo(
     nBar: i32,
     lpsi: *const SCROLLINFO,
     redraw: i32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn GetScrollInfo(
     hwnd: HWND,
     nBar: i32,
     lpsi: *SCROLLINFO,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // Window style for vertical scrollbar
 pub const WS_VSCROLL: u32 = 0x00200000;
@@ -816,7 +816,7 @@ pub extern "user32" fn ShowScrollBar(
     hWnd: HWND,
     wBar: i32,
     bShow: i32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Shell notification (tray icon + balloon) API
@@ -852,7 +852,7 @@ pub const NOTIFYICONDATAW = extern struct {
 pub extern "shell32" fn Shell_NotifyIconW(
     dwMessage: u32,
     lpData: *NOTIFYICONDATAW,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // IMM32 (Input Method Manager) API
@@ -868,24 +868,24 @@ pub const COMPOSITIONFORM = extern struct {
 
 pub extern "imm32" fn ImmGetContext(
     hWnd: HWND,
-) callconv(.c) ?HIMC;
+) callconv(.winapi) ?HIMC;
 
 pub extern "imm32" fn ImmReleaseContext(
     hWnd: HWND,
     hIMC: HIMC,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "imm32" fn ImmGetCompositionStringW(
     hIMC: HIMC,
     dwIndex: u32,
     lpBuf: ?[*]u16,
     dwBufLen: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "imm32" fn ImmSetCompositionWindow(
     hIMC: HIMC,
     lpCompForm: *const COMPOSITIONFORM,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // DWM (Desktop Window Manager) API
@@ -906,37 +906,37 @@ pub extern "uxtheme" fn SetWindowTheme(
     hwnd: HWND,
     pszSubAppName: ?[*:0]const u16,
     pszSubIdList: ?[*:0]const u16,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "dwmapi" fn DwmExtendFrameIntoClientArea(
     hWnd: HWND,
     pMarInset: *const MARGINS,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "dwmapi" fn DwmSetWindowAttribute(
     hwnd: HWND,
     dwAttribute: u32,
     pvAttribute: *const anyopaque,
     cbAttribute: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // GDI double-buffered painting API
 // -----------------------------------------------------------------------
 
-pub extern "gdi32" fn CreateCompatibleDC(hdc: ?HDC) callconv(.c) ?HDC;
-pub extern "gdi32" fn CreateCompatibleBitmap(hdc: HDC, cx: i32, cy: i32) callconv(.c) ?*anyopaque;
-pub extern "gdi32" fn SelectObject(hdc: HDC, h: ?*anyopaque) callconv(.c) ?*anyopaque;
-pub extern "gdi32" fn DeleteDC(hdc: HDC) callconv(.c) i32;
-pub extern "gdi32" fn BitBlt(hdcDest: HDC, x: i32, y: i32, cx: i32, cy: i32, hdcSrc: HDC, x1: i32, y1: i32, rop: u32) callconv(.c) i32;
-pub extern "gdi32" fn DrawTextW(hdc: HDC, lpchText: [*]const u16, cchText: i32, lprc: *RECT, format: u32) callconv(.c) i32;
-pub extern "gdi32" fn SetBkMode(hdc: HDC, mode: i32) callconv(.c) i32;
-pub extern "gdi32" fn CreatePen(iStyle: i32, cWidth: i32, color: u32) callconv(.c) ?*anyopaque;
-pub extern "gdi32" fn MoveToEx(hdc: HDC, x: i32, y: i32, lppt: ?*anyopaque) callconv(.c) i32;
-pub extern "gdi32" fn LineTo(hdc: HDC, x: i32, y: i32) callconv(.c) i32;
+pub extern "gdi32" fn CreateCompatibleDC(hdc: ?HDC) callconv(.winapi) ?HDC;
+pub extern "gdi32" fn CreateCompatibleBitmap(hdc: HDC, cx: i32, cy: i32) callconv(.winapi) ?*anyopaque;
+pub extern "gdi32" fn SelectObject(hdc: HDC, h: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+pub extern "gdi32" fn DeleteDC(hdc: HDC) callconv(.winapi) i32;
+pub extern "gdi32" fn BitBlt(hdcDest: HDC, x: i32, y: i32, cx: i32, cy: i32, hdcSrc: HDC, x1: i32, y1: i32, rop: u32) callconv(.winapi) i32;
+pub extern "gdi32" fn DrawTextW(hdc: HDC, lpchText: [*]const u16, cchText: i32, lprc: *RECT, format: u32) callconv(.winapi) i32;
+pub extern "gdi32" fn SetBkMode(hdc: HDC, mode: i32) callconv(.winapi) i32;
+pub extern "gdi32" fn CreatePen(iStyle: i32, cWidth: i32, color: u32) callconv(.winapi) ?*anyopaque;
+pub extern "gdi32" fn MoveToEx(hdc: HDC, x: i32, y: i32, lppt: ?*anyopaque) callconv(.winapi) i32;
+pub extern "gdi32" fn LineTo(hdc: HDC, x: i32, y: i32) callconv(.winapi) i32;
 
-pub extern "user32" fn BeginPaint(hwnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.c) ?HDC;
-pub extern "user32" fn EndPaint(hwnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.c) i32;
+pub extern "user32" fn BeginPaint(hwnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.winapi) ?HDC;
+pub extern "user32" fn EndPaint(hwnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.winapi) i32;
 
 pub const PAINTSTRUCT = extern struct {
     hdc: HDC,
@@ -958,30 +958,30 @@ pub const DT_NOPREFIX: u32 = 0x800;
 pub extern "gdi32" fn ChoosePixelFormat(
     hdc: HDC,
     ppfd: *const PIXELFORMATDESCRIPTOR,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "gdi32" fn SetPixelFormat(
     hdc: HDC,
     format: i32,
     ppfd: *const PIXELFORMATDESCRIPTOR,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "gdi32" fn SwapBuffers(
     hdc: HDC,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "opengl32" fn wglCreateContext(
     hdc: HDC,
-) callconv(.c) ?HGLRC;
+) callconv(.winapi) ?HGLRC;
 
 pub extern "opengl32" fn wglMakeCurrent(
     hdc: ?HDC,
     hglrc: ?HGLRC,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "opengl32" fn wglDeleteContext(
     hglrc: HGLRC,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // TrackMouseEvent API (for WM_MOUSELEAVE tracking)
@@ -1000,7 +1000,7 @@ pub const TME_LEAVE: u32 = 0x00000002;
 
 pub extern "user32" fn TrackMouseEvent(
     lpEventTrack: *TRACKMOUSEEVENT,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Popup menu API
@@ -1014,14 +1014,14 @@ pub const TPM_LEFTALIGN: u32 = 0x0000;
 pub const TPM_TOPALIGN: u32 = 0x0000;
 pub const TPM_RETURNCMD: u32 = 0x0100;
 
-pub extern "user32" fn CreatePopupMenu() callconv(.c) ?HMENU;
+pub extern "user32" fn CreatePopupMenu() callconv(.winapi) ?HMENU;
 
 pub extern "user32" fn AppendMenuW(
     hMenu: HMENU,
     uFlags: u32,
     uIDNewItem: usize,
     lpNewItem: ?[*:0]const u16,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn TrackPopupMenuEx(
     hMenu: HMENU,
@@ -1030,11 +1030,11 @@ pub extern "user32" fn TrackPopupMenuEx(
     y: i32,
     hwnd: HWND,
     lptpm: ?*const anyopaque,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn DestroyMenu(
     hMenu: HMENU,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Global hotkey API
@@ -1053,12 +1053,12 @@ pub extern "user32" fn RegisterHotKey(
     id: i32,
     fsModifiers: u32,
     vk: u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn UnregisterHotKey(
     hWnd: ?HWND,
     id: i32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Monitor API (additional)
@@ -1069,7 +1069,7 @@ pub const MONITOR_DEFAULTTOPRIMARY: u32 = 0x00000001;
 pub extern "user32" fn MonitorFromPoint(
     pt: POINT,
     dwFlags: u32,
-) callconv(.c) ?HMONITOR;
+) callconv(.winapi) ?HMONITOR;
 
 // -----------------------------------------------------------------------
 // Performance counter API
@@ -1077,11 +1077,11 @@ pub extern "user32" fn MonitorFromPoint(
 
 pub extern "kernel32" fn QueryPerformanceCounter(
     lpPerformanceCount: *i64,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "kernel32" fn QueryPerformanceFrequency(
     lpFrequency: *i64,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Thread input and foreground focus API
@@ -1090,24 +1090,24 @@ pub extern "kernel32" fn QueryPerformanceFrequency(
 pub const WM_ACTIVATE: u32 = 0x0006;
 pub const WA_INACTIVE: u16 = 0;
 
-pub extern "kernel32" fn GetCurrentThreadId() callconv(.c) u32;
+pub extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) u32;
 
-pub extern "user32" fn GetForegroundWindow() callconv(.c) ?HWND;
+pub extern "user32" fn GetForegroundWindow() callconv(.winapi) ?HWND;
 
 pub extern "user32" fn GetWindowThreadProcessId(
     hWnd: HWND,
     lpdwProcessId: ?*u32,
-) callconv(.c) u32;
+) callconv(.winapi) u32;
 
 pub extern "user32" fn AttachThreadInput(
     idAttach: u32,
     idAttachTo: u32,
     fAttach: i32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 pub extern "user32" fn SetForegroundWindow(
     hWnd: HWND,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // Window positioning constants (additional)
@@ -1134,7 +1134,7 @@ pub extern "wininet" fn InternetOpenW(
     lpszProxy: ?[*:0]const u16,
     lpszProxyBypass: ?[*:0]const u16,
     dwFlags: u32,
-) callconv(.c) ?HINTERNET;
+) callconv(.winapi) ?HINTERNET;
 
 pub extern "wininet" fn InternetOpenUrlW(
     hInternet: HINTERNET,
@@ -1143,13 +1143,13 @@ pub extern "wininet" fn InternetOpenUrlW(
     dwHeadersLength: u32,
     dwFlags: u32,
     dwContext: usize,
-) callconv(.c) ?HINTERNET;
+) callconv(.winapi) ?HINTERNET;
 
 pub extern "wininet" fn InternetReadFile(
     hFile: HINTERNET,
     lpBuffer: [*]u8,
     dwNumberOfBytesToRead: u32,
     lpdwNumberOfBytesRead: *u32,
-) callconv(.c) i32;
+) callconv(.winapi) i32;
 
-pub extern "wininet" fn InternetCloseHandle(hInternet: HINTERNET) callconv(.c) i32;
+pub extern "wininet" fn InternetCloseHandle(hInternet: HINTERNET) callconv(.winapi) i32;

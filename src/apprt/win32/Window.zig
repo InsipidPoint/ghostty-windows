@@ -1602,7 +1602,7 @@ pub fn windowWndProc(
     msg: u32,
     wparam: usize,
     lparam: isize,
-) callconv(.c) isize {
+) callconv(.winapi) isize {
     const userdata = w32.GetWindowLongPtrW(hwnd, w32.GWLP_USERDATA);
     const window: *Window = if (userdata != 0)
         @ptrFromInt(@as(usize, @bitCast(userdata)))
