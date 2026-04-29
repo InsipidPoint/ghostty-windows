@@ -540,6 +540,26 @@ pub extern "user32" fn ShowCursor(
     bShow: i32,
 ) callconv(.winapi) i32;
 
+// FlashWindowEx — used to draw attention to an unfocused window.
+pub const FLASHW_STOP: u32 = 0;
+pub const FLASHW_CAPTION: u32 = 0x00000001;
+pub const FLASHW_TRAY: u32 = 0x00000002;
+pub const FLASHW_ALL: u32 = 0x00000003;
+pub const FLASHW_TIMER: u32 = 0x00000004;
+pub const FLASHW_TIMERNOFG: u32 = 0x0000000C;
+
+pub const FLASHWINFO = extern struct {
+    cbSize: u32,
+    hwnd: HWND,
+    dwFlags: u32,
+    uCount: u32,
+    dwTimeout: u32,
+};
+
+pub extern "user32" fn FlashWindowEx(
+    pfwi: *FLASHWINFO,
+) callconv(.winapi) i32;
+
 pub extern "shell32" fn ShellExecuteW(
     hwnd: ?HWND,
     lpOperation: ?[*:0]const u16,

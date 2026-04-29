@@ -861,7 +861,6 @@ pub fn performAction(
         .cell_size,
         .size_limit,
         .progress_report,
-        .command_finished,
         .readonly,
         .float_window,
         // Platform-specific actions that don't apply on Windows:
@@ -873,6 +872,31 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .command_finished => {
+            // Flash the taskbar button if the window isn't currently the
+            // foreground window. macOS bounces the dock icon for the
+            // same reason. We only flash on non-zero exit codes — a
+            // successful command shouldn't pull the user back.
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    if (value.exit_code orelse 0 == 0) return true;
+                    const win_hwnd = core_surface.rt_surface.parent_window.hwnd orelse return true;
+                    const fg = w32.GetForegroundWindow();
+                    if (fg == win_hwnd) return true;
+                    var fwi: w32.FLASHWINFO = .{
+                        .cbSize = @sizeOf(w32.FLASHWINFO),
+                        .hwnd = win_hwnd,
+                        .dwFlags = w32.FLASHW_ALL | w32.FLASHW_TIMERNOFG,
+                        .uCount = 3,
+                        .dwTimeout = 0,
+                    };
+                    _ = w32.FlashWindowEx(&fwi);
+                },
+            }
+            return true;
+        },
 
         .mouse_visibility => {
             switch (target) {
