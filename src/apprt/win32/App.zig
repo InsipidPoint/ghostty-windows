@@ -1286,11 +1286,54 @@ const NOTIF_DESKTOP_TIMER_ID: usize = 2;
 const NOTIF_UPDATE_UID: u32 = 2;
 const NOTIF_UPDATE_TIMER_ID: usize = 3;
 
-/// Start a background thread to check for updates.
+/// Minimum interval between update checks, in seconds. The check
+/// timestamp is persisted in %LOCALAPPDATA%/ghostty/update_check_at.
+const UPDATE_CHECK_INTERVAL_SECS: i64 = 60 * 60; // 1 hour
+
+/// Start a background thread to check for updates. Skips the actual
+/// fetch if we checked within the last UPDATE_CHECK_INTERVAL_SECS.
+/// Manual `.check_for_updates` actions force-refresh by setting
+/// `force=true`.
 fn startUpdateCheck(self: *App) void {
+    if (!self.shouldRunUpdateCheck()) {
+        log.debug("skipping update check (last run within {d}s)", .{UPDATE_CHECK_INTERVAL_SECS});
+        return;
+    }
     _ = std.Thread.spawn(.{}, updateCheckThread, .{self}) catch |err| {
         log.warn("failed to start update check thread: {}", .{err});
     };
+}
+
+/// Read the persisted "last checked at" timestamp; return true if
+/// it's missing/stale. Updates the file with the current timestamp on
+/// the way out so a successful return throttles the next call.
+fn shouldRunUpdateCheck(self: *App) bool {
+    const alloc = self.core_app.alloc;
+    const dir = std.process.getEnvVarOwned(alloc, "LOCALAPPDATA") catch return true;
+    defer alloc.free(dir);
+    const path = std.fs.path.join(alloc, &.{ dir, "ghostty", "update_check_at" }) catch return true;
+    defer alloc.free(path);
+
+    const now = std.time.timestamp();
+    if (std.fs.cwd().openFile(path, .{})) |f| {
+        defer f.close();
+        var buf: [32]u8 = undefined;
+        const n = f.readAll(&buf) catch 0;
+        const text = std.mem.trim(u8, buf[0..n], " \t\r\n");
+        if (std.fmt.parseInt(i64, text, 10)) |last| {
+            if (now - last < UPDATE_CHECK_INTERVAL_SECS) return false;
+        } else |_| {}
+    } else |_| {}
+
+    // Write (or create) the file with the current timestamp.
+    if (std.fs.cwd().makePath(std.fs.path.dirname(path) orelse return true)) |_| {} else |_| {}
+    if (std.fs.cwd().createFile(path, .{ .truncate = true })) |f| {
+        defer f.close();
+        var ts_buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrint(&ts_buf, "{d}", .{now}) catch return true;
+        f.writeAll(s) catch {};
+    } else |_| {}
+    return true;
 }
 
 /// Background thread: fetch latest release tag from GitHub, compare
