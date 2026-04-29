@@ -909,6 +909,7 @@ using System.Runtime.InteropServices;
 public class WC {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
     public delegate bool EP(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EP p, IntPtr l);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -918,8 +919,10 @@ public class WC {
 $count=0
 $cb=[WC+EP]{param($h,$l); $p=[uint32]0; [WC]::GetWindowThreadProcessId($h,[ref]$p)|Out-Null
   if($p -eq '"$pid"' -and [WC]::IsWindowVisible($h)){
-    $cr=New-Object WC+RECT; [WC]::GetClientRect($h,[ref]$cr)|Out-Null
-    if($cr.R -gt 0){$script:count++}}; $true}
+    $cls=New-Object System.Text.StringBuilder 64; [WC]::GetClassName($h,$cls,64)|Out-Null
+    if($cls.ToString() -eq "GhosttyWindow"){
+      $cr=New-Object WC+RECT; [WC]::GetClientRect($h,[ref]$cr)|Out-Null
+      if($cr.R -gt 0){$script:count++}}}; $true}
 [WC]::EnumWindows($cb,[IntPtr]::Zero)|Out-Null
 Write-Output "COUNT=$count"
 ' 2>&1 | tr -d '\r')"
