@@ -857,7 +857,6 @@ pub fn performAction(
         .key_sequence,
         .key_table,
         .toggle_visibility,
-        .present_terminal,
         .pwd,
         .color_change,
         .cell_size,
@@ -875,6 +874,31 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .present_terminal => {
+            // Raise the window containing the target surface and select
+            // its tab. Restores from minimized/iconic state if necessary.
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    const win = core_surface.rt_surface.parent_window;
+                    if (win.hwnd) |hwnd| {
+                        // ShowWindow(SW_RESTORE) brings back from minimize.
+                        _ = w32.ShowWindow(hwnd, w32.SW_RESTORE);
+                        _ = w32.SetForegroundWindow(hwnd);
+                        // Make sure the tab containing this surface is active.
+                        if (win.findTabIndex(core_surface.rt_surface)) |idx| {
+                            if (idx != win.active_tab) win.selectTabIndex(idx);
+                        }
+                        // Focus the surface's child HWND.
+                        if (core_surface.rt_surface.hwnd) |sh| {
+                            _ = w32.SetFocus(sh);
+                        }
+                    }
+                },
+            }
+            return true;
+        },
 
         .new_split => {
             switch (target) {
