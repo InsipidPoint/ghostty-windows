@@ -853,7 +853,6 @@ pub fn performAction(
         // Acknowledge actions that don't need Win32-specific handling.
         // The core handles the logic; we just confirm receipt.
         .renderer_health,
-        .mouse_visibility,
         .key_sequence,
         .key_table,
         .toggle_visibility,
@@ -874,6 +873,25 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .mouse_visibility => {
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    const visible = value == .visible;
+                    core_surface.rt_surface.mouse_visible = visible;
+                    // Force the next WM_SETCURSOR to apply the new state
+                    // by issuing SetCursor immediately if the cursor is
+                    // currently in our client area.
+                    if (!visible) {
+                        _ = w32.SetCursor(null);
+                    } else if (core_surface.rt_surface.current_cursor) |c| {
+                        _ = w32.SetCursor(c);
+                    }
+                },
+            }
+            return true;
+        },
 
         .present_terminal => {
             // Raise the window containing the target surface and select

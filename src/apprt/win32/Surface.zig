@@ -100,6 +100,10 @@ scrollbar_len: usize = 0,
 /// WM_SETCURSOR, so we must override it ourselves).
 current_cursor: ?w32.HCURSOR = null,
 
+/// When false, WM_SETCURSOR sets the cursor to null (invisible). The
+/// core surface toggles this for typing-while-mouse-still etc.
+mouse_visible: bool = true,
+
 /// Search popup HWND (a small top-level window containing an Edit
 /// control). Uses a popup instead of a child window because the
 /// OpenGL viewport covers the entire client area and would paint
@@ -623,6 +627,11 @@ pub fn setMouseShape(self: *Surface, shape: terminal.MouseShape) void {
 /// reset it to the class cursor (IDC_ARROW) on every mouse move.
 /// Returns true if we handled it (caller should return TRUE).
 pub fn handleSetCursor(self: *Surface) bool {
+    // Hidden cursor: pass NULL.
+    if (!self.mouse_visible) {
+        _ = w32.SetCursor(null);
+        return true;
+    }
     if (self.current_cursor) |c| {
         _ = w32.SetCursor(c);
         return true;

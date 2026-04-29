@@ -528,8 +528,17 @@ pub extern "user32" fn IsZoomed(
 ) callconv(.winapi) i32;
 
 pub extern "user32" fn SetCursor(
-    hCursor: HCURSOR,
+    // NULL is documented as valid — it hides the cursor. Make the
+    // parameter optional so callers can pass null without a cast.
+    hCursor: ?HCURSOR,
 ) callconv(.winapi) ?HCURSOR;
+
+/// ShowCursor increments (true) or decrements (false) an internal
+/// display counter. The cursor is shown when the count is >= 0.
+/// Returns the new display count.
+pub extern "user32" fn ShowCursor(
+    bShow: i32,
+) callconv(.winapi) i32;
 
 pub extern "shell32" fn ShellExecuteW(
     hwnd: ?HWND,
