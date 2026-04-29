@@ -27,6 +27,23 @@ the underlying upstream commit when known.
 - New windows cascade 30px from the most recently created window.
 - Build option `-Dwindows-console=true` keeps stderr visible in release
   builds for debugging.
+- Title-bar color tracks the configured background on Windows 11 22H2+
+  (DWMWA_CAPTION_COLOR), and dark/light chrome is chosen by background
+  luminance instead of being hardcoded dark.
+- Title-bar chrome refreshes on config reload.
+- Clicking the update-available balloon opens the GitHub releases page
+  in the user's default browser.
+- Update-check requests are rate-limited to once per hour via a
+  persisted timestamp at `%LOCALAPPDATA%/ghostty/update_check_at`.
+- VS_VERSION_INFO resource is filled in (Explorer → Properties → Details
+  shows real values; signtool tooling has version metadata to attach).
+- Application manifest declares UTF-8 active codepage, longPathAware,
+  and supportedOS GUIDs for Windows 7 through 11.
+- `test_window_size_config` now hard-fails (was non-blocking) if the
+  configured window width didn't take effect.
+- `test_resize` is a real test (was permanently SKIPPED).
+- `ghostty_test.sh` pre-kills leftover processes and retries the exe
+  copy once, eliminating intermittent EBUSY in batch runs.
 
 ### Changed
 - Update-check version source is now `build_config.version` (set by the
