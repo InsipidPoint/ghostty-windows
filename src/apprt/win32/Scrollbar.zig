@@ -10,6 +10,14 @@ const testing = std.testing;
 
 const log = std.log.scoped(.win32_scrollbar);
 
+const SCROLLBAR_WIDTH_BASE: i32 = 14;
+const SCROLLBAR_WIDTH_OVERLAY_COLLAPSED: i32 = 8;
+const THUMB_MIN_HEIGHT_BASE: i32 = 20;
+
+const ALPHA_IDLE: u8 = 80;
+const ALPHA_HOVER: u8 = 140;
+const ALPHA_DRAG: u8 = 200;
+
 /// Computed thumb rectangle within the track.
 pub const ThumbRect = struct { y: i32, h: i32 };
 
@@ -181,18 +189,46 @@ pub const Scrollbar = struct {
         self.alloc.destroy(self);
     }
 
-    /// Update the cached scroll state. Painting / state-machine
-    /// integration comes in later tasks.
+    /// Update the cached scroll state and repaint if anything changed.
     pub fn update(self: *Scrollbar, state: terminal.Scrollbar) void {
+        const changed = !self.first_update and (
+            self.state.total != state.total or
+            self.state.offset != state.offset or
+            self.state.len != state.len
+        );
         self.state = state;
         self.first_update = false;
+        if (changed) self.repaint();
     }
 
     /// Reposition and resize the popup to stay glued to the surface.
-    /// Returns the new scrollbar width (stub returns 0 until Task 5).
+    /// Returns the new scrollbar width.
     pub fn repositionAndResize(self: *Scrollbar) i32 {
-        _ = self;
-        return 0;
+        var rect: w32.RECT = undefined;
+        if (w32.GetClientRect(self.owner, &rect) == 0) return 0;
+
+        const client_h = rect.bottom - rect.top;
+        const width = self.currentWidth();
+
+        // Convert top-right corner of client area to screen coords.
+        var top_right = w32.POINT{ .x = rect.right - width, .y = rect.top };
+        _ = w32.ClientToScreen(self.owner, &top_right);
+
+        _ = w32.SetWindowPos(
+            self.hwnd,
+            null,
+            top_right.x,
+            top_right.y,
+            width,
+            client_h,
+            w32.SWP_NOACTIVATE | w32.SWP_NOZORDER | w32.SWP_SHOWWINDOW,
+        );
+
+        self.repaint();
+
+        // Hard-coded always-visible width-to-subtract for Task 5; Task 8 makes
+        // this mode-aware (returns 0 in overlay mode).
+        return width;
     }
 
     /// Show or hide the popup when the owner surface is shown/hidden.
@@ -200,10 +236,109 @@ pub const Scrollbar = struct {
         _ = w32.ShowWindow(self.hwnd, if (visible) w32.SW_SHOWNOACTIVATE else w32.SW_HIDE);
     }
 
-    /// Update cached theme colors (used by the painter in later tasks).
+    /// Update cached theme colors and repaint if they changed.
     pub fn setTheme(self: *Scrollbar, bg: terminal.color.RGB, fg: terminal.color.RGB) void {
+        if (std.meta.eql(self.bg, bg) and std.meta.eql(self.fg, fg)) return;
         self.bg = bg;
         self.fg = fg;
+        self.repaint();
+    }
+
+    fn dpiScaled(self: *const Scrollbar, base: i32) i32 {
+        return @intFromFloat(@round(@as(f32, @floatFromInt(base)) * self.scale));
+    }
+
+    fn currentWidth(self: *const Scrollbar) i32 {
+        // Hard-coded for Task 5; Task 8 makes this mode-aware.
+        return self.dpiScaled(SCROLLBAR_WIDTH_BASE);
+    }
+
+    fn repaint(self: *Scrollbar) void {
+        var client: w32.RECT = undefined;
+        if (w32.GetClientRect(self.hwnd, &client) == 0) return;
+        const w = client.right - client.left;
+        const h = client.bottom - client.top;
+        if (w <= 0 or h <= 0) return;
+
+        // Allocate a temp BGRA buffer, fill it, blit via UpdateLayeredWindow.
+        const screen_dc = w32.GetDC(null) orelse return;
+        defer _ = w32.ReleaseDC(null, screen_dc);
+
+        const mem_dc = w32.CreateCompatibleDC(screen_dc) orelse return;
+        defer _ = w32.DeleteDC(mem_dc);
+
+        var bits: ?*anyopaque = null;
+        const bmi = w32.BITMAPINFO{
+            .bmiHeader = .{
+                .biWidth = w,
+                // Negative for top-down DIB so row 0 is the top row.
+                .biHeight = -h,
+            },
+        };
+
+        const bitmap = w32.CreateDIBSection(mem_dc, &bmi, w32.DIB_RGB_COLORS, &bits, null, 0)
+            orelse return;
+        defer _ = w32.DeleteObject(bitmap);
+
+        const old = w32.SelectObject(mem_dc, bitmap);
+        defer _ = w32.SelectObject(mem_dc, old.?);
+
+        self.drawBitmap(@ptrCast(@alignCast(bits.?)), w, h);
+
+        var window_rect: w32.RECT = undefined;
+        _ = w32.GetWindowRect(self.hwnd, &window_rect);
+        const dst_pt = w32.POINT{ .x = window_rect.left, .y = window_rect.top };
+        const dst_size = w32.SIZE{ .cx = w, .cy = h };
+        const src_pt = w32.POINT{ .x = 0, .y = 0 };
+        const blend = w32.BLENDFUNCTION{
+            .SourceConstantAlpha = 255, // per-pixel alpha only
+        };
+
+        _ = w32.UpdateLayeredWindow(
+            self.hwnd,
+            screen_dc,
+            &dst_pt,
+            &dst_size,
+            mem_dc,
+            &src_pt,
+            0,
+            &blend,
+            w32.ULW_ALPHA,
+        );
+    }
+
+    fn drawBitmap(self: *Scrollbar, pixels: [*]u32, w: i32, h: i32) void {
+        // Premultiplied BGRA. Layout per pixel: 0xAARRGGBB.
+        // For Task 5 (always-visible only): paint full track + opaque thumb.
+
+        const bg = packBGRA(self.bg, 255);
+        const total = w * h;
+        var i: i32 = 0;
+        while (i < total) : (i += 1) {
+            pixels[@intCast(i)] = bg;
+        }
+
+        const min_h = self.dpiScaled(THUMB_MIN_HEIGHT_BASE);
+        const r = thumbRect(self.state.total, self.state.offset, self.state.len, h, min_h);
+
+        const thumb_alpha = self.thumbAlpha();
+        const thumb_color = packBGRA(self.fg, thumb_alpha);
+
+        var y: i32 = r.y;
+        while (y < r.y + r.h and y < h) : (y += 1) {
+            var x: i32 = 0;
+            while (x < w) : (x += 1) {
+                pixels[@intCast(y * w + x)] = thumb_color;
+            }
+        }
+    }
+
+    fn thumbAlpha(self: *const Scrollbar) u8 {
+        const base = if (self.dragging) ALPHA_DRAG
+            else if (self.hover) ALPHA_HOVER
+            else ALPHA_IDLE;
+        // Task 5: no fade. Task 7 multiplies by self.fade.
+        return base;
     }
 
     /// Called on WM_SETTINGCHANGE. Returns true if a mode change
@@ -218,6 +353,17 @@ pub const Scrollbar = struct {
         self.scale = @as(f32, @floatFromInt(dpi)) / 96.0;
     }
 };
+
+/// Pack RGB + alpha into premultiplied BGRA (UpdateLayeredWindow expects
+/// premultiplied per-pixel alpha).
+fn packBGRA(c: terminal.color.RGB, a: u8) u32 {
+    // Premultiply: each channel *= a / 255.
+    const af: f32 = @as(f32, @floatFromInt(a)) / 255.0;
+    const r: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(c.r)) * af));
+    const g: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(c.g)) * af));
+    const b: u32 = @intFromFloat(@round(@as(f32, @floatFromInt(c.b)) * af));
+    return (@as(u32, a) << 24) | (r << 16) | (g << 8) | b;
+}
 
 var class_registered: bool = false;
 

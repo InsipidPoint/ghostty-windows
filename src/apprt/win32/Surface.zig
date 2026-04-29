@@ -263,6 +263,14 @@ pub fn init(
         self.scrollbar = null;
     };
 
+    // Seed initial theme colors from the app config.
+    if (self.scrollbar) |sb| {
+        sb.setTheme(
+            app.config.background.toTerminalRGB(),
+            app.config.foreground.toTerminalRGB(),
+        );
+    }
+
     // Register this surface with the core app.
     try app.core_app.addSurface(self);
     errdefer app.core_app.deleteSurface(self);
