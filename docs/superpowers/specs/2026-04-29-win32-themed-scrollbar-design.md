@@ -184,7 +184,7 @@ Each `Surface` is an independent HWND with its own OpenGL context and its own
 ### Scroll action callback
 
 When the user drags the thumb or page-clicks, the scrollbar calls
-`surface.scrollToRow(new_offset)` — a new tiny method on `Surface` that wraps
+`surface.scrollToOffset(new_offset)` — a new tiny method on `Surface` that wraps
 the same core action used by the existing `WM_VSCROLL` `SB_THUMBTRACK` handler
 (`scroll_viewport` with a row offset). This preserves the existing scroll path;
 we are only changing the *source* of the user input.
@@ -309,6 +309,19 @@ All handled on the scrollbar HWND (the layered popup). Mouse wheel is **not**
 intercepted — `WM_MOUSEWHEEL` arrives at whichever window has focus, which is
 the Surface, so the existing wheel handler keeps working unchanged.
 
+### Focus / activation
+
+The popup must never steal focus from the terminal. By default, clicking a
+`WS_POPUP` window activates it, which would defocus the terminal mid-drag.
+Two-part fix:
+
+- Create the popup with `WS_EX_NOACTIVATE` (added to the existing
+  `WS_EX_LAYERED`).
+- Handle `WM_MOUSEACTIVATE` in the popup's WndProc, returning `MA_NOACTIVATE`.
+
+Belt-and-suspenders: the extended style covers most cases, the message
+handler covers edge cases like programmatic activation.
+
 ### Click-through when hidden
 
 In overlay mode with `visibility = hidden`, the popup is invisible (alpha=0
@@ -328,7 +341,7 @@ control, like every other Win32 scrollbar.
 
 | Event | Action |
 |---|---|
-| `WM_MOUSEMOVE` | Update `hover`; `TrackMouseEvent(TME_LEAVE)`; if dragging, compute new offset and call `surface.scrollToRow`; repaint. |
+| `WM_MOUSEMOVE` | Update `hover`; `TrackMouseEvent(TME_LEAVE)`; if dragging, compute new offset and call `surface.scrollToOffset`; repaint. |
 | `WM_MOUSELEAVE` | Clear `hover`; in overlay mode, restart 1s idle timer; repaint. |
 | `WM_LBUTTONDOWN` on thumb rect | `SetCapture`; `drag_anchor = mouse_y - thumb_y`; `dragging = true`. |
 | `WM_LBUTTONDOWN` on track (not thumb) | Page up/down: `offset ± len`, clamped to `[0, total - len]`. |
@@ -357,9 +370,10 @@ const new_offset = @as(usize, @intFromFloat(
 ### Unit tests (in `Scrollbar.zig` test blocks)
 
 - Thumb geometry at top, middle, bottom of scrollback.
-- Thumb minimum height enforcement (20px) when page/total ratio is tiny.
+- Thumb minimum height enforcement (20px) when len/total ratio is tiny.
 - Drag math correctness and clamp at both ends.
-- Color lerp correctness (e.g., `lerp(#000, #fff, 0.5) == #808080`).
+- Drag math edge cases: `total <= len` and `track_range == 0` both no-op.
+- Effective alpha calculation: `final_alpha = base_alpha * fade / 255`.
 - Registry mode parsing: `0` → always-visible, `1` → overlay, missing →
   overlay.
 
@@ -371,9 +385,10 @@ const new_offset = @as(usize, @intFromFloat(
 4. Locate the scrollbar popup. Since it's an owned popup (not a child), use
    `EnumThreadWindows` filtered by class name `GhosttyScrollbar` and
    `GetWindow(hwnd, GW_OWNER)` matching the surface HWND. Assert it exists
-   and `IsWindowVisible` is true.
-5. Sleep 1.5s; assert the window is still present but the visibility state has
-   transitioned to `hidden`. State is exposed via a named test-only message:
+   and that its visibility state (queried via `WM_GHOSTTY_SCROLLBAR_QUERY`,
+   defined below) is `fading_in` or `shown`.
+5. Sleep 1.5s; assert the visibility state has transitioned to `hidden`.
+   State is exposed via a named test-only message:
    ```zig
    pub const WM_GHOSTTY_SCROLLBAR_QUERY = w32.WM_USER + 1;
    ```
@@ -404,7 +419,7 @@ Documented in the implementation commit message:
 - `src/apprt/win32/Scrollbar.zig` (new) — ~400 lines including tests.
 - `src/apprt/win32/Surface.zig` — remove ~50 lines of native scrollbar code,
   add `scrollbar: ?*Scrollbar` field, route theme/resize/settings-change
-  through to it, add `scrollToRow` helper.
+  through to it, add `scrollToOffset` helper.
 - `src/apprt/win32/win32.zig` — add the Win32 bindings we need:
   `TrackMouseEvent`, `TRACKMOUSEEVENT`, `RegOpenKeyExW`, `RegQueryValueExW`,
   registry constants, `UpdateLayeredWindow`, `BLENDFUNCTION`, `ULW_ALPHA`,
