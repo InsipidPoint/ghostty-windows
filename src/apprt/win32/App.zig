@@ -1271,6 +1271,13 @@ const UPDATE_URL = "https://api.github.com/repos/InsipidPoint/ghostty-windows/re
 /// Custom message posted from the update thread to the message loop.
 const WM_APP_UPDATE_AVAILABLE: u32 = w32.WM_APP + 2;
 
+/// Tray-icon notification callback (uCallbackMessage). The wparam is
+/// the tray icon's uID; lparam carries NIN_* events.
+const WM_APP_TRAY: u32 = w32.WM_APP + 3;
+
+/// User-facing GitHub releases page that the update balloon links to.
+const RELEASES_URL = "https://github.com/InsipidPoint/ghostty-windows/releases/latest";
+
 /// Tray icon and timer IDs for notifications. Distinct IDs mean the
 /// desktop and update balloons can coexist without one's auto-cleanup
 /// removing the other's icon.
@@ -1357,7 +1364,10 @@ fn showUpdateNotification(self: *App, ver: []const u8) void {
     nid.cbSize = @sizeOf(w32.NOTIFYICONDATAW);
     nid.hWnd = hwnd;
     nid.uID = NOTIF_UPDATE_UID;
-    nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP;
+    // NIF_MESSAGE registers our callback so a click on the balloon
+    // is delivered as WM_APP_TRAY → opens the GitHub releases page.
+    nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP | w32.NIF_MESSAGE;
+    nid.uCallbackMessage = WM_APP_TRAY;
     nid.hIcon = w32.LoadIconW(self.hinstance, w32.IDI_GHOSTTY) orelse w32.LoadIconW(null, w32.IDI_APPLICATION);
     nid.dwInfoFlags = w32.NIIF_INFO;
     nid.uVersion_or_uTimeout = 10000;
@@ -1814,6 +1824,27 @@ fn msgWndProc(
             const ver = ptr[0..len];
             defer app.core_app.alloc.free(ver);
             app.showUpdateNotification(ver);
+        }
+        return 0;
+    }
+
+    if (msg == WM_APP_TRAY) {
+        // wparam = uID, lparam = NIN_* event. We only act on
+        // NIN_BALLOONUSERCLICK on the update notification, opening the
+        // GitHub releases page in the user's default browser.
+        const event: u32 = @intCast(lparam & 0xFFFF);
+        if (wparam == NOTIF_UPDATE_UID and event == w32.NIN_BALLOONUSERCLICK) {
+            var url_buf: [256]u16 = undefined;
+            const url_len = std.unicode.utf8ToUtf16Le(&url_buf, RELEASES_URL) catch return 0;
+            url_buf[url_len] = 0;
+            _ = w32.ShellExecuteW(
+                null,
+                std.unicode.utf8ToUtf16LeStringLiteral("open"),
+                @ptrCast(&url_buf),
+                null,
+                null,
+                w32.SW_SHOW,
+            );
         }
         return 0;
     }

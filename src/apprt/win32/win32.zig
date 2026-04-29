@@ -917,6 +917,13 @@ pub const NIF_ICON: u32 = 0x00000002;
 pub const NIF_TIP: u32 = 0x00000004;
 pub const NIF_INFO: u32 = 0x00000010;
 
+// Tray-icon callback message values (delivered as lparam in the
+// uCallbackMessage handler).
+pub const NIN_BALLOONSHOW: u32 = 0x0402;
+pub const NIN_BALLOONHIDE: u32 = 0x0403;
+pub const NIN_BALLOONTIMEOUT: u32 = 0x0404;
+pub const NIN_BALLOONUSERCLICK: u32 = 0x0405;
+
 pub const NIIF_INFO: u32 = 0x00000001;
 
 pub const NOTIFYICONDATAW = extern struct {
