@@ -1622,6 +1622,29 @@ fn surfaceWndProc(
             return 0;
         },
 
+        w32.WM_MOVE => {
+            if (surface.scrollbar) |sb| _ = sb.repositionAndResize();
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
+        w32.WM_SHOWWINDOW => {
+            if (surface.scrollbar) |sb| sb.setOwnerVisible(wparam != 0);
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
+        w32.WM_SETTINGCHANGE => {
+            if (surface.scrollbar) |sb| {
+                if (sb.onSettingsChange()) {
+                    // Re-flow the grid to accommodate a mode change.
+                    const width: u32 = surface.width;
+                    const height: u32 = surface.height;
+                    const lp_size: isize = @intCast((@as(usize, height) << 16) | @as(usize, width));
+                    _ = w32.PostMessageW(hwnd, w32.WM_SIZE, 0, lp_size);
+                }
+            }
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
         w32.WM_CLOSE => {
             // Posted by Surface.close() to defer destruction to the
             // message loop. This is the safe place to call closeSplitSurface
@@ -1763,11 +1786,6 @@ fn surfaceWndProc(
 
         w32.WM_MOUSEHWHEEL => {
             surface.handleMouseWheel(wparam, .horizontal);
-            return 0;
-        },
-
-        w32.WM_VSCROLL => {
-            surface.handleVScroll(wparam);
             return 0;
         },
 

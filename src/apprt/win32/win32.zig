@@ -120,11 +120,13 @@ pub const MONITORINFO = extern struct {
 };
 
 // Window messages
+pub const WM_USER: u32 = 0x0400;
 pub const WM_APP: u32 = 0x8000;
 pub const WM_QUIT: u32 = 0x0012;
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_SIZE: u32 = 0x0005;
+pub const WM_MOVE: u32 = 0x0003;
 pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_KILLFOCUS: u32 = 0x0008;
 pub const WM_ERASEBKGND: u32 = 0x0014;
@@ -1217,6 +1219,7 @@ pub extern "user32" fn SetForegroundWindow(
 pub const HWND_TOPMOST: ?HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 pub const HWND_NOTOPMOST: ?HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
 pub const SWP_NOACTIVATE: u32 = 0x0010;
+pub const SWP_SHOWWINDOW: u32 = 0x0040;
 pub const WS_EX_TOPMOST: u32 = 0x00000008;
 pub const SW_SHOWNOACTIVATE: i32 = 4;
 
@@ -1256,3 +1259,112 @@ pub extern "wininet" fn InternetReadFile(
 ) callconv(.winapi) i32;
 
 pub extern "wininet" fn InternetCloseHandle(hInternet: HINTERNET) callconv(.winapi) i32;
+
+// -----------------------------------------------------------------------
+// Layered window painting
+// -----------------------------------------------------------------------
+
+pub const ULW_ALPHA: u32 = 0x00000002;
+pub const AC_SRC_OVER: u8 = 0x00;
+pub const AC_SRC_ALPHA: u8 = 0x01;
+pub const WS_EX_TRANSPARENT: u32 = 0x00000020;
+pub const WS_EX_NOACTIVATE: u32 = 0x08000000;
+
+pub const BLENDFUNCTION = extern struct {
+    BlendOp: u8 = AC_SRC_OVER,
+    BlendFlags: u8 = 0,
+    SourceConstantAlpha: u8 = 255,
+    AlphaFormat: u8 = AC_SRC_ALPHA,
+};
+
+pub const SIZE = extern struct { cx: i32, cy: i32 };
+
+pub extern "user32" fn UpdateLayeredWindow(
+    hwnd: HWND,
+    hdcDst: ?HDC,
+    pptDst: ?*const POINT,
+    psize: ?*const SIZE,
+    hdcSrc: ?HDC,
+    pptSrc: ?*const POINT,
+    crKey: u32,
+    pblend: ?*const BLENDFUNCTION,
+    dwFlags: u32,
+) callconv(.winapi) c_int;
+
+// -----------------------------------------------------------------------
+// DIB section
+// -----------------------------------------------------------------------
+
+pub const BI_RGB: u32 = 0;
+pub const DIB_RGB_COLORS: u32 = 0;
+
+pub const BITMAPINFOHEADER = extern struct {
+    biSize: u32 = @sizeOf(BITMAPINFOHEADER),
+    biWidth: i32,
+    biHeight: i32,
+    biPlanes: u16 = 1,
+    biBitCount: u16 = 32,
+    biCompression: u32 = BI_RGB,
+    biSizeImage: u32 = 0,
+    biXPelsPerMeter: i32 = 0,
+    biYPelsPerMeter: i32 = 0,
+    biClrUsed: u32 = 0,
+    biClrImportant: u32 = 0,
+};
+
+pub const BITMAPINFO = extern struct {
+    bmiHeader: BITMAPINFOHEADER,
+    bmiColors: [1]u32 = .{0},
+};
+
+pub extern "gdi32" fn CreateDIBSection(
+    hdc: ?HDC,
+    pbmi: *const BITMAPINFO,
+    usage: u32,
+    ppvBits: *?*anyopaque,
+    hSection: ?HANDLE,
+    offset: u32,
+) callconv(.winapi) ?HANDLE;
+
+// -----------------------------------------------------------------------
+// Mouse activate
+// -----------------------------------------------------------------------
+
+pub const WM_MOUSEACTIVATE: u32 = 0x0021;
+pub const MA_NOACTIVATE: isize = 3;
+
+// -----------------------------------------------------------------------
+// Registry
+// -----------------------------------------------------------------------
+
+pub const HKEY = *opaque {};
+pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
+pub const KEY_READ: u32 = 0x00020019;
+pub const REG_DWORD: u32 = 4;
+pub const ERROR_SUCCESS: u32 = 0;
+
+pub extern "advapi32" fn RegOpenKeyExW(
+    hKey: HKEY,
+    lpSubKey: [*:0]const u16,
+    ulOptions: u32,
+    samDesired: u32,
+    phkResult: *HKEY,
+) callconv(.winapi) u32;
+
+pub extern "advapi32" fn RegQueryValueExW(
+    hKey: HKEY,
+    lpValueName: [*:0]const u16,
+    lpReserved: ?*u32,
+    lpType: ?*u32,
+    lpData: ?[*]u8,
+    lpcbData: *u32,
+) callconv(.winapi) u32;
+
+pub extern "advapi32" fn RegCloseKey(hKey: HKEY) callconv(.winapi) u32;
+
+// -----------------------------------------------------------------------
+// Settings change broadcast
+// -----------------------------------------------------------------------
+
+pub const WM_SETTINGCHANGE: u32 = 0x001A;
+pub const WM_SHOWWINDOW: u32 = 0x0018;

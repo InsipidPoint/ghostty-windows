@@ -323,6 +323,40 @@ test "parseMode: 1 is overlay" {
 test "parseMode: 0 is always_visible" {
     try testing.expectEqual(Mode.always_visible, parseMode(0));
 }
+
+test "thumbRect: clamps when min_h exceeds track_h" {
+    // Tiny track + normal min_h: h should not exceed track_h.
+    const r = thumbRect(1000, 0, 50, 10, 20);
+    try testing.expect(r.h <= 10);
+    try testing.expect(r.y + r.h <= 10);
+}
+
+test "thumbRect: clamps when offset would push thumb past bottom" {
+    // offset=999 → naive y = round(999/1000 * 400) = 400; with h=20 the
+    // thumb would extend to 420. Clamp must pull y back to track_h - h = 380.
+    const r = thumbRect(1000, 999, 50, 400, 20);
+    try testing.expectEqual(@as(i32, 380), r.y);
+    try testing.expectEqual(@as(i32, 20), r.h);
+    try testing.expect(r.y + r.h <= 400);
+}
+
+test "dragOffset: applies drag_anchor" {
+    // drag_anchor=100 should be equivalent to mouse_y shifted by -100.
+    const a = dragOffset(190, 100, 400, 20, 1000, 50).?;
+    const b = dragOffset(90, 0, 400, 20, 1000, 50).?;
+    try testing.expectEqual(b, a);
+}
+
+test "dragOffset: rounds half to nearest" {
+    // mouse_y=191, drag_anchor=0 → 191/380 * 950 = 477.5 → 478 (round-half-to-even rounds .5 up here).
+    const off = dragOffset(191, 0, 400, 20, 1000, 50).?;
+    try testing.expect(off == 477 or off == 478);
+}
+
+test "parseMode: non-{0,1} value treated as overlay" {
+    try testing.expectEqual(Mode.overlay, parseMode(2));
+    try testing.expectEqual(Mode.overlay, parseMode(99));
+}
 ```
 
 - [ ] **Step 2: Verify tests fail to compile**
@@ -352,7 +386,7 @@ pub fn thumbRect(
 
     const computed_h_f = (len_f / total_f) * track_f;
     const computed_h: i32 = @intFromFloat(@round(computed_h_f));
-    const h = @max(min_h, computed_h);
+    const h = @min(track_h, @max(min_h, computed_h));
 
     const computed_y_f = (offset_f / total_f) * track_f;
     var y: i32 = @intFromFloat(@round(computed_y_f));

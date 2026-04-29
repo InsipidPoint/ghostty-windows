@@ -474,29 +474,48 @@ test_scrollbar() {
         return
     fi
 
-    # Generate enough output to create scrollback (100+ lines)
+    # Fill scrollback so the scrollbar has reason to exist.
     sleep 1
-    ps -Action sendtext -ProcessId "$pid" -Text "for /L %i in (1,1,100) do @echo Line %i scrollback test"
+    ps -Action sendtext -ProcessId "$pid" -Text "for /L %i in (1,1,200) do @echo Line %i scrollback test"
     ps -Action sendkeys -ProcessId "$pid" -Keys "{ENTER}"
     sleep 3
 
-    # Take screenshot — scrollbar should be visible on the right edge
-    screenshot "scrollbar" "$pid"
-    echo "  ✓ Scrollback generated, screenshot captured (verify scrollbar visible)"
+    # Scroll to top — Ghostty's default binding for scroll_to_top is
+    # Shift+Home. This dispatches setScrollbar(), which paints and (in
+    # overlay mode) starts the fade-in.
+    ps -Action sendkeys -ProcessId "$pid" -Keys "+{HOME}"
+    sleep 0.5
 
-    # Test scroll up with Page Up key
-    ps -Action sendkeys -ProcessId "$pid" -Keys "{PGUP}"
-    sleep 1
-    screenshot "scrollbar_pgup" "$pid"
-    echo "  ✓ Page Up sent, screenshot captured (verify scrolled up)"
+    # Query scrollbar state — expect fading_in (1) or shown (2).
+    local q1
+    q1="$(ps -Action scrollbar-query)"
+    local state1
+    state1="$(get_val "$q1" STATE)"
+    if [ "$state1" = "1" ] || [ "$state1" = "2" ]; then
+        echo "  ✓ scrollbar visible after scroll (state=$state1)"
+        PASS=$((PASS + 1))
+    else
+        echo "  ✗ scrollbar visibility wrong after scroll: state=$state1"
+        FAIL=$((FAIL + 1))
+    fi
 
-    # Test scroll back to bottom with Page Down
-    ps -Action sendkeys -ProcessId "$pid" -Keys "{PGDN}"
-    sleep 1
+    # Wait for idle fade-out (IDLE_DELAY_MS=1000ms + fade duration ~130ms).
+    sleep 1.5
+
+    # Query again — expect hidden (0) after the idle timer fires.
+    local q2
+    q2="$(ps -Action scrollbar-query)"
+    local state2
+    state2="$(get_val "$q2" STATE)"
+    if [ "$state2" = "0" ]; then
+        echo "  ✓ scrollbar auto-hides after idle (state=hidden)"
+        PASS=$((PASS + 1))
+    else
+        echo "  ✗ scrollbar did not auto-hide: state=$state2"
+        FAIL=$((FAIL + 1))
+    fi
 
     ps -Action kill -ProcessId "$pid" 2>/dev/null || true
-    PASS=$((PASS + 1))
-    echo "  ● PASSED"
 }
 
 test_close_confirmation() {
@@ -890,6 +909,7 @@ using System.Runtime.InteropServices;
 public class WC {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
     public delegate bool EP(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EP p, IntPtr l);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -899,8 +919,10 @@ public class WC {
 $count=0
 $cb=[WC+EP]{param($h,$l); $p=[uint32]0; [WC]::GetWindowThreadProcessId($h,[ref]$p)|Out-Null
   if($p -eq '"$pid"' -and [WC]::IsWindowVisible($h)){
-    $cr=New-Object WC+RECT; [WC]::GetClientRect($h,[ref]$cr)|Out-Null
-    if($cr.R -gt 0){$script:count++}}; $true}
+    $cls=New-Object System.Text.StringBuilder 64; [WC]::GetClassName($h,$cls,64)|Out-Null
+    if($cls.ToString() -eq "GhosttyWindow"){
+      $cr=New-Object WC+RECT; [WC]::GetClientRect($h,[ref]$cr)|Out-Null
+      if($cr.R -gt 0){$script:count++}}}; $true}
 [WC]::EnumWindows($cb,[IntPtr]::Zero)|Out-Null
 Write-Output "COUNT=$count"
 ' 2>&1 | tr -d '\r')"
@@ -1445,7 +1467,7 @@ list_tests() {
     echo "  multiple_windows    — Multiple window lifecycle"
     echo "  clipboard           — Copy/paste functionality"
     echo "  config_file         — Config file loading with custom settings"
-    echo "  scrollbar           — Scrollbar appears with scrollback content"
+    echo "  scrollbar           — Auto-hide overlay scrollbar fade-in/out lifecycle"
     echo "  close_confirmation  — Close blocked by confirmation dialog"
     echo "  url_detection       — URL displayed in terminal for Ctrl+click"
     echo "  notifications      — Desktop notification via OSC 9"

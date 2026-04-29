@@ -15,6 +15,7 @@ const internal_os = @import("../../os/main.zig");
 const App = @import("App.zig");
 const Window = @import("Window.zig");
 const w32 = @import("win32.zig");
+const Scrollbar = @import("Scrollbar.zig").Scrollbar;
 
 const log = std.log.scoped(.win32);
 
@@ -89,11 +90,9 @@ in_live_resize: bool = false,
 /// synchronize rendering with the DWM compositor.
 frame_event: ?w32.HANDLE = null,
 
-/// Cached scrollbar state for updating the Win32 scrollbar.
-/// Updated by the core via performAction(.scrollbar).
-scrollbar_total: usize = 0,
-scrollbar_offset: usize = 0,
-scrollbar_len: usize = 0,
+/// Themed scrollbar (custom layered-popup overlay).
+/// Created lazily after the surface HWND exists.
+scrollbar: ?*Scrollbar = null,
 
 /// The current mouse cursor. Cached so WM_SETCURSOR can restore it
 /// (DefWindowProc resets the cursor to the class cursor on every
@@ -257,6 +256,21 @@ pub fn init(
     // --- Core terminal surface initialization ---
     const alloc = app.core_app.alloc;
 
+    // Create the themed scrollbar popup (owned by the surface HWND).
+    self.scrollbar = try Scrollbar.create(alloc, hwnd, self);
+    errdefer if (self.scrollbar) |sb| {
+        sb.destroy();
+        self.scrollbar = null;
+    };
+
+    // Seed initial theme colors from the app config.
+    if (self.scrollbar) |sb| {
+        sb.setTheme(
+            app.config.background.toTerminalRGB(),
+            app.config.foreground.toTerminalRGB(),
+        );
+    }
+
     // Register this surface with the core app.
     try app.core_app.addSurface(self);
     errdefer app.core_app.deleteSurface(self);
@@ -316,6 +330,12 @@ pub fn deinit(self: *Surface) void {
         self.hdc = null;
     }
     log.debug("surface deinit: DC released", .{});
+
+    // Destroy the themed scrollbar before the surface HWND is gone.
+    if (self.scrollbar) |sb| {
+        sb.destroy();
+        self.scrollbar = null;
+    }
 
     // Destroy popup windows and their GDI resources.
     if (self.search_hwnd) |popup| {
@@ -1367,85 +1387,19 @@ pub fn toggleWindowDecorations(self: *Surface) void {
     self.parent_window.toggleWindowDecorations();
 }
 
-/// Update the Win32 scrollbar to reflect the terminal's scroll state.
+/// Update the themed scrollbar to reflect the terminal's scroll state.
 /// Called from performAction(.scrollbar) when the viewport changes.
 pub fn setScrollbar(self: *Surface, scrollbar: terminal.Scrollbar) void {
-    const hwnd = self.hwnd orelse return;
-
-    // Cache the values for handleVScroll.
-    self.scrollbar_total = scrollbar.total;
-    self.scrollbar_offset = scrollbar.offset;
-    self.scrollbar_len = scrollbar.len;
-
-    // If total <= visible rows, there's nothing to scroll — hide the
-    // scrollbar entirely.
-    if (scrollbar.total <= scrollbar.len) {
-        _ = w32.ShowScrollBar(hwnd, w32.SB_VERT, 0);
-        return;
-    }
-
-    // Show the scrollbar (adds WS_VSCROLL dynamically) and set the range.
-    // ShowScrollBar is more reliable than adding WS_VSCROLL via
-    // SetWindowLongW because OpenGL drivers can strip style bits.
-    _ = w32.ShowScrollBar(hwnd, w32.SB_VERT, 1);
-
-    const si = w32.SCROLLINFO{
-        .cbSize = @sizeOf(w32.SCROLLINFO),
-        .fMask = w32.SIF_ALL,
-        .nMin = 0,
-        .nMax = @intCast(scrollbar.total -| 1),
-        .nPage = @intCast(scrollbar.len),
-        .nPos = @intCast(scrollbar.offset),
-        .nTrackPos = 0,
-    };
-    _ = w32.SetScrollInfo(hwnd, w32.SB_VERT, &si, 1);
+    if (self.scrollbar) |sb| sb.update(scrollbar);
 }
 
-/// Handle WM_VSCROLL — user is interacting with the scrollbar.
-pub fn handleVScroll(self: *Surface, wparam: usize) void {
+/// Scroll the terminal to the given absolute row offset.
+/// Called by the themed scrollbar during drag / click.
+pub fn scrollToOffset(self: *Surface, offset: usize) void {
     if (!self.core_surface_ready) return;
-
-    const request: u16 = @intCast(wparam & 0xFFFF);
-
-    const row: ?usize = switch (request) {
-        w32.SB_LINEUP => if (self.scrollbar_offset > 0)
-            self.scrollbar_offset - 1
-        else
-            null,
-        w32.SB_LINEDOWN => if (self.scrollbar_offset + self.scrollbar_len < self.scrollbar_total)
-            self.scrollbar_offset + 1
-        else
-            null,
-        w32.SB_PAGEUP => self.scrollbar_offset -| self.scrollbar_len,
-        w32.SB_PAGEDOWN => blk: {
-            const max = self.scrollbar_total -| self.scrollbar_len;
-            break :blk @min(self.scrollbar_offset + self.scrollbar_len, max);
-        },
-        w32.SB_THUMBTRACK, w32.SB_THUMBPOSITION => blk: {
-            // Get the 32-bit track position from SCROLLINFO (wparam
-            // high word is only 16 bits and overflows for large scrollback).
-            var si = w32.SCROLLINFO{
-                .cbSize = @sizeOf(w32.SCROLLINFO),
-                .fMask = w32.SIF_ALL,
-                .nMin = 0,
-                .nMax = 0,
-                .nPage = 0,
-                .nPos = 0,
-                .nTrackPos = 0,
-            };
-            _ = w32.GetScrollInfo(self.hwnd.?, w32.SB_VERT, &si);
-            break :blk @intCast(si.nTrackPos);
-        },
-        w32.SB_TOP => @as(usize, 0),
-        w32.SB_BOTTOM => self.scrollbar_total -| self.scrollbar_len,
-        else => null,
+    _ = self.core_surface.performBindingAction(.{ .scroll_to_row = offset }) catch |err| {
+        log.err("scrollToOffset error: {}", .{err});
     };
-
-    if (row) |r| {
-        _ = self.core_surface.performBindingAction(.{ .scroll_to_row = r }) catch |err| {
-            log.err("scroll_to_row error: {}", .{err});
-        };
-    }
 }
 
 // -----------------------------------------------------------------------
@@ -1457,10 +1411,20 @@ pub fn handleResize(self: *Surface, width: u32, height: u32) void {
     // Skip zero-size events (minimized windows).
     if (width == 0 or height == 0) return;
 
-    self.width = width;
     self.height = height;
 
-    // Reposition popups if visible
+    // Pre-flight the scrollbar so we know whether to subtract its width.
+    // This must happen before sizeCallback so the grid gets the right width.
+    var grid_width = width;
+    if (self.scrollbar) |sb| {
+        const sub = sb.repositionAndResize();
+        if (sub > 0 and grid_width > @as(u32, @intCast(sub))) {
+            grid_width -= @as(u32, @intCast(sub));
+        }
+    }
+    self.width = grid_width;
+
+    // Reposition popups with corrected width.
     if (self.search_active) self.positionSearchBar();
     if (self.palette_active) self.positionCommandPalette();
 
@@ -1468,7 +1432,7 @@ pub fn handleResize(self: *Surface, width: u32, height: u32) void {
 
     // Notify the core surface so it recalculates the terminal grid,
     // updates the renderer viewport, and sends SIGWINCH to the PTY.
-    self.core_surface.sizeCallback(.{ .width = width, .height = height }) catch |err| {
+    self.core_surface.sizeCallback(.{ .width = grid_width, .height = height }) catch |err| {
         log.err("sizeCallback error: {}", .{err});
         return;
     };
@@ -1539,6 +1503,9 @@ pub fn handleDpiChange(self: *Surface) void {
             _ = w32.SendMessageW(edit, w32.WM_SETFONT, @intFromPtr(f), 1);
         }
     }
+
+    // Notify the scrollbar of the new DPI.
+    if (self.scrollbar) |sb| sb.onDpiChanged(@intFromFloat(self.scale * 96.0));
 }
 
 /// Handle WM_KEYDOWN / WM_SYSKEYDOWN / WM_KEYUP / WM_SYSKEYUP.
