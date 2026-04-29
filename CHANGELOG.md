@@ -3,6 +3,18 @@
 All notable changes to the Ghostty Windows fork. Each release line includes
 the underlying upstream commit when known.
 
+## Unreleased
+
+### Added
+- Themed scrollbar replaces the native white `WS_VSCROLL`. Painted in the
+  terminal's foreground/background colors via a layered popup overlay
+  (`UpdateLayeredWindow` with per-pixel alpha) composited above the OpenGL
+  surface. Honors the OS "Always show scrollbars" accessibility setting:
+  overlay (auto-hide on idle) by default, always-visible when the OS prefers
+  it; mode switches live without a Ghostty restart. Mouse drag, hover, and
+  page-click work; clicks fall through to the terminal when the scrollbar
+  is hidden.
+
 ## win-v1.0.1 — 2026-04-29
 
 ### Added
