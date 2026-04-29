@@ -128,14 +128,40 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
     const style: u32 = if (options.is_quick_terminal) w32.WS_POPUP else w32.WS_OVERLAPPEDWINDOW;
     const ex_style: u32 = if (options.is_quick_terminal) w32.WS_EX_TOOLWINDOW else 0;
 
+    // Cascade non-quick-terminal windows: stack each new window 30px
+    // down/right of the most recently created window. Stops once the
+    // offset would push the window off the work area, then resets.
+    // Quick terminals are positioned by QuickTerminal.calculateRects.
+    const cascade_step: i32 = 30;
+    var cx: i32 = w32.CW_USEDEFAULT;
+    var cy: i32 = w32.CW_USEDEFAULT;
+    if (!options.is_quick_terminal and app.windows.items.len > 0) {
+        // Find the previously created window's position and bump.
+        const prev = app.windows.items[app.windows.items.len - 1];
+        if (prev.hwnd) |ph| {
+            var prev_rect: w32.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+            if (w32.GetWindowRect(ph, &prev_rect) != 0) {
+                cx = prev_rect.left + cascade_step;
+                cy = prev_rect.top + cascade_step;
+                // Reset the cascade if it would push off-screen.
+                if (cx + 800 > w32.GetSystemMetrics(0) or
+                    cy + 600 > w32.GetSystemMetrics(1))
+                {
+                    cx = w32.CW_USEDEFAULT;
+                    cy = w32.CW_USEDEFAULT;
+                }
+            }
+        }
+    }
+
     // Create the top-level container window using the GhosttyWindow class.
     const hwnd = w32.CreateWindowExW(
         ex_style,
         App.WINDOW_CLASS_NAME,
         std.unicode.utf8ToUtf16LeStringLiteral("Ghostty"),
         style,
-        w32.CW_USEDEFAULT,
-        w32.CW_USEDEFAULT,
+        cx,
+        cy,
         800,
         600,
         null,

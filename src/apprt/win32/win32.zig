@@ -606,6 +606,12 @@ pub extern "user32" fn FlashWindowEx(
     pfwi: *FLASHWINFO,
 ) callconv(.winapi) i32;
 
+// GetSystemMetrics — used for cascade-position bounds checks etc.
+// 0=SM_CXSCREEN, 1=SM_CYSCREEN.
+pub extern "user32" fn GetSystemMetrics(
+    nIndex: i32,
+) callconv(.winapi) i32;
+
 pub extern "shell32" fn ShellExecuteW(
     hwnd: ?HWND,
     lpOperation: ?[*:0]const u16,
