@@ -3,7 +3,7 @@
 All notable changes to the Ghostty Windows fork. Each release line includes
 the underlying upstream commit when known.
 
-## Unreleased
+## win-v1.0.1 — 2026-04-29
 
 ### Added
 - Horizontal scroll support via WM_MOUSEHWHEEL.
