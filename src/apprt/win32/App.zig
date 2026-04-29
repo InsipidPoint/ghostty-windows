@@ -416,7 +416,28 @@ pub fn performAction(
         },
 
         .ring_bell => {
+            // Audio bell.
             _ = w32.MessageBeep(0xFFFFFFFF);
+            // Visual bell: flash the taskbar button if the window owning
+            // this surface isn't currently the foreground window. Without
+            // this, BEL on a backgrounded terminal is invisible.
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    if (core_surface.rt_surface.parent_window.hwnd) |win_hwnd| {
+                        if (w32.GetForegroundWindow() != win_hwnd) {
+                            var fwi: w32.FLASHWINFO = .{
+                                .cbSize = @sizeOf(w32.FLASHWINFO),
+                                .hwnd = win_hwnd,
+                                .dwFlags = w32.FLASHW_ALL | w32.FLASHW_TIMERNOFG,
+                                .uCount = 2,
+                                .dwTimeout = 0,
+                            };
+                            _ = w32.FlashWindowEx(&fwi);
+                        }
+                    }
+                },
+            }
             return true;
         },
 
