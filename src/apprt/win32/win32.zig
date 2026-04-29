@@ -772,6 +772,7 @@ pub const SIF_ALL: u32 = 0x0017;
 pub const SIF_POS: u32 = 0x0004;
 pub const SIF_RANGE: u32 = 0x0001;
 pub const SIF_PAGE: u32 = 0x0002;
+pub const SIF_TRACKPOS: u32 = 0x0010;
 pub const SIF_DISABLENOSCROLL: u32 = 0x0008;
 
 pub const WM_VSCROLL: u32 = 0x0115;
@@ -929,7 +930,9 @@ pub extern "gdi32" fn CreateCompatibleBitmap(hdc: HDC, cx: i32, cy: i32) callcon
 pub extern "gdi32" fn SelectObject(hdc: HDC, h: ?*anyopaque) callconv(.winapi) ?*anyopaque;
 pub extern "gdi32" fn DeleteDC(hdc: HDC) callconv(.winapi) i32;
 pub extern "gdi32" fn BitBlt(hdcDest: HDC, x: i32, y: i32, cx: i32, cy: i32, hdcSrc: HDC, x1: i32, y1: i32, rop: u32) callconv(.winapi) i32;
-pub extern "gdi32" fn DrawTextW(hdc: HDC, lpchText: [*]const u16, cchText: i32, lprc: *RECT, format: u32) callconv(.winapi) i32;
+// DrawTextW is exported by user32.dll, not gdi32.dll. The previous
+// declaration on gdi32 worked only because user32 was linked anyway.
+pub extern "user32" fn DrawTextW(hdc: HDC, lpchText: [*]const u16, cchText: i32, lprc: *RECT, format: u32) callconv(.winapi) i32;
 pub extern "gdi32" fn SetBkMode(hdc: HDC, mode: i32) callconv(.winapi) i32;
 pub extern "gdi32" fn CreatePen(iStyle: i32, cWidth: i32, color: u32) callconv(.winapi) ?*anyopaque;
 pub extern "gdi32" fn MoveToEx(hdc: HDC, x: i32, y: i32, lppt: ?*anyopaque) callconv(.winapi) i32;
