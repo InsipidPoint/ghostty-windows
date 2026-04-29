@@ -24,7 +24,16 @@ mkdir -p "$SCREENSHOT_DIR"
 WIN_TEMP="$(cmd.exe /c "echo %TEMP%" 2>/dev/null | tr -d '\r')"
 LOCAL_EXE="${WIN_TEMP}\\ghostty-test.exe"
 echo "Copying exe to local path to avoid security prompts..."
-cp "$REPO_DIR/zig-out/bin/ghostty.exe" "$(wslpath "$WIN_TEMP")/ghostty-test.exe"
+# Kill any leftover ghostty-test processes from a previous run; otherwise
+# the cp below races a still-mapped exe and fails (EBUSY) intermittently
+# when several tests are run back-to-back.
+powershell.exe -ExecutionPolicy Bypass -Command "Get-Process ghostty-test -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" 2>/dev/null || true
+sleep 0.3
+# Retry the copy once if it fails (Windows file locking can be transient).
+cp "$REPO_DIR/zig-out/bin/ghostty.exe" "$(wslpath "$WIN_TEMP")/ghostty-test.exe" 2>/dev/null || {
+    sleep 0.5
+    cp "$REPO_DIR/zig-out/bin/ghostty.exe" "$(wslpath "$WIN_TEMP")/ghostty-test.exe"
+}
 GHOSTTY_EXE="$LOCAL_EXE"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
