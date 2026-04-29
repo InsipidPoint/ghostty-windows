@@ -862,7 +862,6 @@ pub fn performAction(
         .size_limit,
         .progress_report,
         .readonly,
-        .float_window,
         // Platform-specific actions that don't apply on Windows:
         .secure_input, // macOS EnableSecureEventInput
         .undo, // macOS NSUndoManager
@@ -872,6 +871,33 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .float_window => {
+            // Toggle WS_EX_TOPMOST so the window stays above non-topmost
+            // windows. Equivalent to macOS NSWindow.level = .floating.
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    const win_hwnd = core_surface.rt_surface.parent_window.hwnd orelse return true;
+                    const ex = w32.GetWindowLongPtrW(win_hwnd, w32.GWL_EXSTYLE);
+                    const is_topmost = (ex & @as(isize, w32.WS_EX_TOPMOST)) != 0;
+                    const want: bool = switch (value) {
+                        .on => true,
+                        .off => false,
+                        .toggle => !is_topmost,
+                    };
+                    if (want == is_topmost) return true;
+                    const insert_after = if (want) w32.HWND_TOPMOST else w32.HWND_NOTOPMOST;
+                    _ = w32.SetWindowPos(
+                        win_hwnd,
+                        insert_after,
+                        0, 0, 0, 0,
+                        w32.SWP_NOMOVE | w32.SWP_NOSIZE | w32.SWP_NOACTIVATE,
+                    );
+                },
+            }
+            return true;
+        },
 
         .command_finished => {
             // Flash the taskbar button if the window isn't currently the

@@ -1146,7 +1146,9 @@ pub extern "user32" fn SetForegroundWindow(
 // -----------------------------------------------------------------------
 
 pub const HWND_TOPMOST: ?HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+pub const HWND_NOTOPMOST: ?HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
 pub const SWP_NOACTIVATE: u32 = 0x0010;
+pub const WS_EX_TOPMOST: u32 = 0x00000008;
 pub const SW_SHOWNOACTIVATE: i32 = 4;
 
 // -----------------------------------------------------------------------
