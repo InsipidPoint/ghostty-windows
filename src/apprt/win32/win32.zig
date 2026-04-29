@@ -286,6 +286,10 @@ pub const CW_USEDEFAULT: i32 = @bitCast(@as(u32, 0x80000000));
 // Standard icon IDs (MAKEINTRESOURCE values)
 pub const IDI_APPLICATION: usize = 32512;
 
+/// Resource ID of the application icon (matches ID_ICON_GHOSTTY in
+/// dist/windows/ghostty.rc).
+pub const IDI_GHOSTTY: usize = 1;
+
 pub extern "user32" fn LoadIconW(
     hInstance: ?HINSTANCE,
     lpIconName: usize,

@@ -122,6 +122,12 @@ pub fn init(
 
     // Register the window container class (GDI painting, no CS_OWNDC).
     // CS_DBLCLKS is required to receive WM_LBUTTONDBLCLK for divider equalize.
+    // Application icon, loaded from the embedded resource. Falls back
+    // to the default app icon if missing (only happens with unusual
+    // build configs that strip the .rc file).
+    const app_icon = w32.LoadIconW(hinstance, w32.IDI_GHOSTTY) orelse
+        w32.LoadIconW(null, w32.IDI_APPLICATION);
+
     const wc = w32.WNDCLASSEXW{
         .cbSize = @sizeOf(w32.WNDCLASSEXW),
         .style = w32.CS_DBLCLKS,
@@ -129,12 +135,12 @@ pub fn init(
         .cbClsExtra = 0,
         .cbWndExtra = 0,
         .hInstance = hinstance,
-        .hIcon = null,
+        .hIcon = app_icon,
         .hCursor = w32.LoadCursorW(null, w32.IDC_ARROW),
         .hbrBackground = bg_brush,
         .lpszMenuName = null,
         .lpszClassName = WINDOW_CLASS_NAME,
-        .hIconSm = null,
+        .hIconSm = app_icon,
     };
 
     self.class_atom = w32.RegisterClassExW(&wc);
@@ -151,12 +157,12 @@ pub fn init(
         .cbClsExtra = 0,
         .cbWndExtra = 0,
         .hInstance = hinstance,
-        .hIcon = null,
+        .hIcon = app_icon,
         .hCursor = w32.LoadCursorW(null, w32.IDC_ARROW),
         .hbrBackground = null,
         .lpszMenuName = null,
         .lpszClassName = TERMINAL_CLASS_NAME,
-        .hIconSm = null,
+        .hIconSm = app_icon,
     };
 
     self.terminal_class_atom = w32.RegisterClassExW(&tc);
@@ -1301,7 +1307,7 @@ fn showUpdateNotification(self: *App, ver: []const u8) void {
     nid.hWnd = hwnd;
     nid.uID = NOTIF_UPDATE_UID;
     nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP;
-    nid.hIcon = w32.LoadIconW(null, w32.IDI_APPLICATION);
+    nid.hIcon = w32.LoadIconW(self.hinstance, w32.IDI_GHOSTTY) orelse w32.LoadIconW(null, w32.IDI_APPLICATION);
     nid.dwInfoFlags = w32.NIIF_INFO;
     nid.uVersion_or_uTimeout = 10000;
 
@@ -1436,7 +1442,7 @@ fn showDesktopNotification(
     nid.hWnd = hwnd;
     nid.uID = NOTIF_DESKTOP_UID;
     nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP;
-    nid.hIcon = w32.LoadIconW(null, w32.IDI_APPLICATION);
+    nid.hIcon = w32.LoadIconW(self.hinstance, w32.IDI_GHOSTTY) orelse w32.LoadIconW(null, w32.IDI_APPLICATION);
     nid.dwInfoFlags = w32.NIIF_INFO;
     nid.uVersion_or_uTimeout = 5000; // 5 second timeout
 
