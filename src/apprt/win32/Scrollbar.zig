@@ -341,6 +341,96 @@ pub const Scrollbar = struct {
         return base;
     }
 
+    fn ensureLeaveTracking(self: *Scrollbar) void {
+        var tme = w32.TRACKMOUSEEVENT{
+            .cbSize = @sizeOf(w32.TRACKMOUSEEVENT),
+            .dwFlags = w32.TME_LEAVE,
+            .hwndTrack = self.hwnd,
+            .dwHoverTime = 0,
+        };
+        _ = w32.TrackMouseEvent(&tme);
+    }
+
+    fn trackHeight(self: *const Scrollbar) i32 {
+        var rect: w32.RECT = undefined;
+        if (w32.GetClientRect(self.hwnd, &rect) == 0) return 0;
+        return rect.bottom - rect.top;
+    }
+
+    fn currentThumbRect(self: *const Scrollbar) ThumbRect {
+        return thumbRect(
+            self.state.total,
+            self.state.offset,
+            self.state.len,
+            self.trackHeight(),
+            self.dpiScaled(THUMB_MIN_HEIGHT_BASE),
+        );
+    }
+
+    fn onMouseMove(self: *Scrollbar, x: i32, y: i32) void {
+        _ = x;
+        self.ensureLeaveTracking();
+
+        if (self.dragging) {
+            if (dragOffset(
+                y,
+                self.drag_anchor,
+                self.trackHeight(),
+                self.currentThumbRect().h,
+                self.state.total,
+                self.state.len,
+            )) |off| {
+                self.state.offset = off;
+                self.surface.scrollToOffset(off);
+                self.repaint();
+            }
+            return;
+        }
+
+        if (!self.hover) {
+            self.hover = true;
+            self.repaint();
+        }
+    }
+
+    fn onMouseLeave(self: *Scrollbar) void {
+        if (self.hover) {
+            self.hover = false;
+            self.repaint();
+        }
+    }
+
+    fn onLeftDown(self: *Scrollbar, y: i32) void {
+        const r = self.currentThumbRect();
+        if (y >= r.y and y < r.y + r.h) {
+            // Drag.
+            _ = w32.SetCapture(self.hwnd);
+            self.drag_anchor = y - r.y;
+            self.dragging = true;
+        } else {
+            // Page click.
+            const total = self.state.total;
+            const len = self.state.len;
+            if (total <= len) return;
+            const max = total - len;
+            const new_off = if (y < r.y)
+                (if (self.state.offset > len) self.state.offset - len else 0)
+            else
+                @min(self.state.offset + len, max);
+            self.state.offset = new_off;
+            self.surface.scrollToOffset(new_off);
+            self.repaint();
+        }
+    }
+
+    fn onLeftUp(self: *Scrollbar) void {
+        if (self.dragging) {
+            _ = w32.ReleaseCapture();
+            self.dragging = false;
+            self.repaint();
+        }
+    }
+
     /// Called on WM_SETTINGCHANGE. Returns true if a mode change
     /// requires the terminal grid to be re-flowed.
     pub fn onSettingsChange(self: *Scrollbar) bool {
@@ -395,9 +485,40 @@ fn scrollbarWndProc(
     wparam: usize,
     lparam: isize,
 ) callconv(.winapi) isize {
-    // Stub for now. Forwards everything to DefWindowProc until subsequent
-    // tasks add real handlers.
-    return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+    const ud = w32.GetWindowLongPtrW(hwnd, w32.GWLP_USERDATA);
+    const self_opt: ?*Scrollbar = if (ud == 0) null else @ptrFromInt(@as(usize, @bitCast(ud)));
+    const self = self_opt orelse return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+
+    switch (msg) {
+        w32.WM_MOUSEACTIVATE => return w32.MA_NOACTIVATE,
+
+        w32.WM_MOUSEMOVE => {
+            const x: i32 = @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)) & 0xFFFF))));
+            const y: i32 = @as(i16, @bitCast(@as(u16, @truncate((@as(usize, @bitCast(lparam)) >> 16) & 0xFFFF))));
+            self.onMouseMove(x, y);
+            return 0;
+        },
+
+        w32.WM_MOUSELEAVE => {
+            self.onMouseLeave();
+            return 0;
+        },
+
+        w32.WM_LBUTTONDOWN => {
+            const y: i32 = @as(i16, @bitCast(@as(u16, @truncate((@as(usize, @bitCast(lparam)) >> 16) & 0xFFFF))));
+            self.onLeftDown(y);
+            return 0;
+        },
+
+        w32.WM_LBUTTONUP => {
+            self.onLeftUp();
+            return 0;
+        },
+
+        WM_GHOSTTY_SCROLLBAR_QUERY => return @intFromEnum(self.visibility),
+
+        else => return w32.DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
 }
 
 // ---------------------------------------------------------------------------
