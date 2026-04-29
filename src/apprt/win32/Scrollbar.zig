@@ -14,6 +14,12 @@ const SCROLLBAR_WIDTH_BASE: i32 = 14;
 const SCROLLBAR_WIDTH_OVERLAY_COLLAPSED: i32 = 8;
 const THUMB_MIN_HEIGHT_BASE: i32 = 20;
 
+const FADE_TIMER_ID: usize = 1;
+const IDLE_TIMER_ID: usize = 2;
+const FADE_INTERVAL_MS: u32 = 16; // ~60Hz
+const FADE_STEP: u8 = 32;
+const IDLE_DELAY_MS: u32 = 1000;
+
 const ALPHA_IDLE: u8 = 80;
 const ALPHA_HOVER: u8 = 140;
 const ALPHA_DRAG: u8 = 200;
@@ -205,11 +211,24 @@ pub const Scrollbar = struct {
             self.state.len != state.len;
         self.state = state;
         self.first_update = false;
-        // Always paint the first delivery: at create time we painted with
-        // the .zero placeholder, which doesn't match the real scrollback.
-        // Task 7 will gate this behind mode (overlay starts hidden via
-        // alpha=0; always-visible paints normally).
-        if (was_first or changed) self.repaint();
+
+        if (was_first) {
+            // Initial state — silent. In overlay mode start hidden + transparent.
+            // The popup is already painted with .zero placeholder (alpha=0 = invisible).
+            self.visibility = .hidden;
+            self.fade = 0;
+            self.setTransparent();
+            self.repaint(); // Re-paint with new alpha=0 + transparent style.
+            return;
+        }
+
+        if (changed) {
+            if (self.visibility == .hidden or self.visibility == .fading_out) {
+                self.startFadeIn();
+            }
+            self.restartIdleTimer();
+            self.repaint();
+        }
     }
 
     /// Reposition and resize the popup to stay glued to the surface.
@@ -320,13 +339,12 @@ pub const Scrollbar = struct {
 
     fn drawBitmap(self: *Scrollbar, pixels: [*]u32, w: i32, h: i32) void {
         // Premultiplied BGRA. Layout per pixel: 0xAARRGGBB.
-        // For Task 5 (always-visible only): paint full track + opaque thumb.
+        // Overlay mode: track is fully transparent; only the thumb is painted.
 
-        const bg = packBGRA(self.bg, 255);
         const total = w * h;
         var i: i32 = 0;
         while (i < total) : (i += 1) {
-            pixels[@intCast(i)] = bg;
+            pixels[@intCast(i)] = 0; // fully transparent
         }
 
         const min_h = self.dpiScaled(THUMB_MIN_HEIGHT_BASE);
@@ -348,8 +366,7 @@ pub const Scrollbar = struct {
         const base = if (self.dragging) ALPHA_DRAG
             else if (self.hover) ALPHA_HOVER
             else ALPHA_IDLE;
-        // Task 5: no fade. Task 7 multiplies by self.fade.
-        return base;
+        return effectiveAlpha(base, self.fade);
     }
 
     fn ensureLeaveTracking(self: *Scrollbar) void {
@@ -380,6 +397,9 @@ pub const Scrollbar = struct {
 
     fn onMouseMove(self: *Scrollbar, x: i32, y: i32) void {
         _ = x;
+        if (self.visibility == .hidden or self.visibility == .fading_out) {
+            self.startFadeIn();
+        }
         self.ensureLeaveTracking();
 
         if (self.dragging) {
@@ -409,6 +429,7 @@ pub const Scrollbar = struct {
             self.hover = false;
             self.repaint();
         }
+        if (!self.dragging) self.restartIdleTimer();
     }
 
     fn onLeftDown(self: *Scrollbar, y: i32) void {
@@ -452,6 +473,64 @@ pub const Scrollbar = struct {
     /// Update the DPI scale factor.
     pub fn onDpiChanged(self: *Scrollbar, dpi: u32) void {
         self.scale = @as(f32, @floatFromInt(dpi)) / 96.0;
+    }
+
+    fn startFadeIn(self: *Scrollbar) void {
+        self.visibility = .fading_in;
+        _ = w32.SetTimer(self.hwnd, FADE_TIMER_ID, FADE_INTERVAL_MS, null);
+        self.clearTransparent();
+        self.repaint();
+    }
+
+    fn startFadeOut(self: *Scrollbar) void {
+        self.visibility = .fading_out;
+        _ = w32.SetTimer(self.hwnd, FADE_TIMER_ID, FADE_INTERVAL_MS, null);
+        self.repaint();
+    }
+
+    fn restartIdleTimer(self: *Scrollbar) void {
+        _ = w32.SetTimer(self.hwnd, IDLE_TIMER_ID, IDLE_DELAY_MS, null);
+    }
+
+    fn onFadeTick(self: *Scrollbar) void {
+        switch (self.visibility) {
+            .fading_in => {
+                const new_fade = @min(@as(u16, self.fade) + FADE_STEP, 255);
+                self.fade = @intCast(new_fade);
+                if (self.fade == 255) {
+                    self.visibility = .shown;
+                    _ = w32.KillTimer(self.hwnd, FADE_TIMER_ID);
+                }
+                self.repaint();
+            },
+            .fading_out => {
+                const new_fade = if (self.fade > FADE_STEP) self.fade - FADE_STEP else 0;
+                self.fade = new_fade;
+                if (self.fade == 0) {
+                    self.visibility = .hidden;
+                    _ = w32.KillTimer(self.hwnd, FADE_TIMER_ID);
+                    self.setTransparent();
+                }
+                self.repaint();
+            },
+            else => _ = w32.KillTimer(self.hwnd, FADE_TIMER_ID),
+        }
+    }
+
+    fn onIdleTick(self: *Scrollbar) void {
+        _ = w32.KillTimer(self.hwnd, IDLE_TIMER_ID);
+        if (self.dragging or self.hover) return;
+        self.startFadeOut();
+    }
+
+    fn setTransparent(self: *Scrollbar) void {
+        const cur = w32.GetWindowLongW(self.hwnd, w32.GWL_EXSTYLE);
+        _ = w32.SetWindowLongW(self.hwnd, w32.GWL_EXSTYLE, cur | w32.WS_EX_TRANSPARENT);
+    }
+
+    fn clearTransparent(self: *Scrollbar) void {
+        const cur = w32.GetWindowLongW(self.hwnd, w32.GWL_EXSTYLE);
+        _ = w32.SetWindowLongW(self.hwnd, w32.GWL_EXSTYLE, cur & ~w32.WS_EX_TRANSPARENT);
     }
 };
 
@@ -502,6 +581,15 @@ fn scrollbarWndProc(
 
     switch (msg) {
         w32.WM_MOUSEACTIVATE => return w32.MA_NOACTIVATE,
+
+        w32.WM_TIMER => {
+            switch (wparam) {
+                FADE_TIMER_ID => self.onFadeTick(),
+                IDLE_TIMER_ID => self.onIdleTick(),
+                else => {},
+            }
+            return 0;
+        },
 
         w32.WM_MOUSEMOVE => {
             const x: i32 = @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)) & 0xFFFF))));
