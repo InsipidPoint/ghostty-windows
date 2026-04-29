@@ -980,6 +980,12 @@ pub extern "imm32" fn ImmSetCompositionWindow(
 /// DWMWA_USE_IMMERSIVE_DARK_MODE — tells DWM to use dark-mode window chrome.
 /// Supported on Windows 10 build 18985+ (formally documented from Windows 11).
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+/// Title-bar fill color (Windows 11 22H2+). COLORREF 0x00BBGGRR.
+pub const DWMWA_CAPTION_COLOR: u32 = 35;
+/// Title-bar text color (Windows 11 22H2+). COLORREF 0x00BBGGRR.
+pub const DWMWA_TEXT_COLOR: u32 = 36;
+/// Border color (Windows 11+). COLORREF 0x00BBGGRR.
+pub const DWMWA_BORDER_COLOR: u32 = 34;
 
 pub const MARGINS = extern struct {
     left: i32,

@@ -179,13 +179,29 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
     // Store the Window pointer in GWLP_USERDATA for the WndProc.
     _ = w32.SetWindowLongPtrW(hwnd, w32.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 
-    // Enable dark mode window chrome so the title bar matches the
-    // terminal's dark background.
-    const dark_mode: u32 = 1;
+    // Enable dark or light window chrome based on the terminal's
+    // configured background color. Hardcoding dark mode looked off
+    // for users running light themes.
+    const bg = app.config.background;
+    const luminance: f32 = (0.2126 * @as(f32, @floatFromInt(bg.r)) +
+        0.7152 * @as(f32, @floatFromInt(bg.g)) +
+        0.0722 * @as(f32, @floatFromInt(bg.b))) / 255.0;
+    const dark_mode: u32 = if (luminance < 0.5) 1 else 0;
     _ = w32.DwmSetWindowAttribute(
         hwnd,
         w32.DWMWA_USE_IMMERSIVE_DARK_MODE,
         @ptrCast(&dark_mode),
+        @sizeOf(u32),
+    );
+
+    // On Windows 11 22H2+, also color the title bar to match the
+    // terminal background. DWMWA_CAPTION_COLOR is COLORREF (0x00BBGGRR);
+    // older Windows builds ignore the unknown attribute.
+    const caption_color: u32 = (@as(u32, bg.r)) | (@as(u32, bg.g) << 8) | (@as(u32, bg.b) << 16);
+    _ = w32.DwmSetWindowAttribute(
+        hwnd,
+        w32.DWMWA_CAPTION_COLOR,
+        @ptrCast(&caption_color),
         @sizeOf(u32),
     );
 
