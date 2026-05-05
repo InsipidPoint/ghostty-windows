@@ -15,6 +15,24 @@ the underlying upstream commit when known.
   page-click work; clicks fall through to the terminal when the scrollbar
   is hidden.
 
+### Fixed
+- JIS keyboard layout no longer drifts to a US-like mapping inside
+  applications that use Win32 Input Mode (notably Claude Code's prompt
+  via ConPTY): `@` becoming `` ` ``, `[` becoming `]`, `]` becoming `\`,
+  etc. The trigger was `ToUnicode` returning -1 for a dead key and
+  ghostty leaving the buffered dead character in the kernel's per-thread
+  keyboard state. Subsequent `ToUnicode` calls then composed against
+  that residue, producing wrong characters until ghostty exited — the
+  damage even survived a `claude -c` restart because the state lives in
+  ghostty's process, not Claude's. The fix drains the dead-key state
+  after detecting it (mirroring wezterm's
+  `KeyboardLayoutInfo::clear_key_state`) and surfaces the dead character
+  itself as the `Uc` field so the application still sees the keystroke.
+  Both `ToUnicode` call sites now also skip modifier-only VKs (Shift,
+  Ctrl, Alt, Win, lock keys), which never produce a character on their
+  own and are another way to perturb the per-thread state.
+
+
 ## win-v1.0.1 — 2026-04-29
 
 ### Added
