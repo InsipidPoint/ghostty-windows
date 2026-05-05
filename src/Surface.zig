@@ -3183,6 +3183,22 @@ fn encodeKey(
     event: input.KeyEvent,
     insp_ev: ?*inspectorpkg.KeyEvent,
 ) !?termio.Message.WriteReq {
+    // Win32 Input Mode (DEC mode 9001) is exclusive: the apprt encodes
+    // every key event as `\x1b[Vk;Sc;Uc;Kd;Cs;Rc_`, and the core key
+    // encoder must stay silent. Otherwise kitty-kbd / modifyOtherKeys /
+    // legacy CSI output would race the apprt's sequence and the
+    // receiving app would see *only* the core encoding (since the apprt
+    // path here returns `.consumed`, never sending the Win32 Input Mode
+    // bytes). This bit users on JIS layout in Claude Code as `shift+5`
+    // arriving as `5`: kitty-kbd encoded `digit_5+shift` to a non-Uc
+    // sequence, the apprt path was suppressed, and Claude saw `5`.
+    {
+        self.renderer_state.mutex.lock();
+        const win32_input = self.io.terminal.modes.get(.win32_input);
+        self.renderer_state.mutex.unlock();
+        if (win32_input) return null;
+    }
+
     const write_req: termio.Message.WriteReq = req: {
         // Build our encoding options, which requires the lock.
         const encoding_opts = self.encodeKeyOpts();
