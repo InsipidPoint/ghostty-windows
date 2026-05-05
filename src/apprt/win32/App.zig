@@ -1707,6 +1707,20 @@ fn surfaceWndProc(
             return 0;
         },
 
+        w32.WM_SYSCHAR => {
+            // TranslateMessage turns every WM_SYSKEYDOWN with a printable
+            // character (Alt+letter, Alt+symbol) into a follow-up
+            // WM_SYSCHAR. The keystroke itself was already handled in
+            // WM_SYSKEYDOWN above (keybindings fire there), so the
+            // WM_SYSCHAR has no further job for us — but if we forward it
+            // to DefWindowProc, the default handler treats it as an
+            // unmatched menu accelerator and rings MessageBeep. That's
+            // why splitting via Alt+- / Alt+\ etc. produced an audible
+            // ding even though the split itself fired correctly. Consume
+            // the message so the default beep never plays.
+            return 0;
+        },
+
         w32.WM_CHAR => {
             // In Win32 Input Mode, the Unicode character is already
             // included in the WM_KEYDOWN event (Uc parameter). WM_CHAR
