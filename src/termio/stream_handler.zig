@@ -37,8 +37,9 @@ pub const StreamHandler = struct {
     renderer_mailbox: *renderer.Thread.Mailbox,
 
     /// A handle to wake up the renderer. This hints to the renderer that
-    /// a repaint should happen.
-    renderer_wakeup: xev.Async,
+    /// a repaint should happen. Pointer to the renderer thread's Async
+    /// (Windows IOCP requires this — see Termio.zig).
+    renderer_wakeup: *xev.Async,
 
     /// The default cursor state. This is used with CSI q. This is
     /// set to true when we're currently in the default cursor state.

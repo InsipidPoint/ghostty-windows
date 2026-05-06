@@ -44,8 +44,11 @@ terminal: terminalpkg.Terminal,
 renderer_state: *renderer.State,
 
 /// A handle to wake up the renderer. This hints to the renderer that
-/// a repaint should happen.
-renderer_wakeup: xev.Async,
+/// a repaint should happen. Pointer to the renderer thread's Async,
+/// not a copy — xev.Async on the Windows IOCP backend has internal
+/// state (guard/wakeup/waiter). Copying gives a dead Async whose
+/// notify() never posts to the renderer's IOCP.
+renderer_wakeup: *xev.Async,
 
 /// The mailbox for notifying the renderer of things.
 renderer_mailbox: *renderer.Thread.Mailbox,
@@ -665,9 +668,18 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
         }
 
         self.last_cursor_reset = now;
-        _ = self.renderer_mailbox.push(.{
+        if (self.renderer_mailbox.push(.{
             .reset_cursor_blink = {},
-        }, .{ .instant = {} });
+        }, .{ .instant = {} }) > 0) {
+            // Wake the renderer so it drains the mailbox. Without this, an
+            // unfocused renderer (cursor blink timer canceled in
+            // renderer/Thread.zig setFocus path) has no periodic wake source,
+            // and these reset_cursor_blink messages accumulate at up to
+            // 2/sec until the 64-slot mailbox is full — at which point the
+            // next blocking push (e.g. focusCallback's .focus message) hangs
+            // the UI thread forever.
+            self.renderer_wakeup.notify() catch {};
+        }
     } else |err| {
         log.warn("failed to get current time err={}", .{err});
     }

@@ -693,7 +693,12 @@ pub fn init(
             .backend = .{ .exec = io_exec },
             .mailbox = io_mailbox,
             .renderer_state = &self.renderer_state,
-            .renderer_wakeup = render_thread.wakeup,
+            // Take the pointer from self (heap-stable), not from the
+            // local `render_thread`, because the latter goes out of
+            // scope when this function returns. xev.Async on Windows
+            // IOCP carries internal state, so the pointer must remain
+            // valid for the lifetime of the Termio.
+            .renderer_wakeup = &self.renderer_thread.wakeup,
             .renderer_mailbox = render_thread.mailbox,
             .surface_mailbox = .{ .surface = self, .app = app_mailbox },
         });
@@ -3319,6 +3324,13 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
     _ = self.renderer_thread.mailbox.push(.{
         .focus = focused,
     }, .{ .forever = {} });
+
+    // Wake the renderer so it drains the mailbox. Without this, an
+    // unfocused renderer (cursor blink timer canceled in Thread.zig
+    // setFocus path) has no wake source, and successive focus pushes
+    // accumulate until the 64-slot mailbox fills and the next push
+    // blocks the UI thread forever.
+    try self.queueRender();
 
     if (!focused) unfocused: {
         // If we lost focus and we have a keypress, then we want to send a key
