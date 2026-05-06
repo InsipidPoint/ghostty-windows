@@ -1693,6 +1693,16 @@ pub fn windowWndProc(
     };
 
     switch (msg) {
+        w32.WM_GETOBJECT => {
+            // Opt out of MSAA accessibility for OBJID_CLIENT on the
+            // top-level window too. See the matching handler in
+            // App.surfaceWndProc for the rationale: returning 0 here
+            // prevents oleacc from creating an AccWrap proxy whose
+            // later destruction can re-enter our WindowProc via
+            // SetFocus and deadlock on a COM marshaling reply.
+            if (lparam == w32.OBJID_CLIENT) return 0;
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
         w32.WM_SIZE => {
             window.handleResize();
             return 0;

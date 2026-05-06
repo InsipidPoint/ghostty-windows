@@ -129,6 +129,14 @@ pub const WM_SIZE: u32 = 0x0005;
 pub const WM_MOVE: u32 = 0x0003;
 pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_KILLFOCUS: u32 = 0x0008;
+pub const WM_GETOBJECT: u32 = 0x003D;
+/// MSAA object IDs queried via WM_GETOBJECT lparam. OBJID_CLIENT is the
+/// main one — returning 0 (not -4 as some docs suggest) before reaching
+/// DefWindowProc skips the oleacc default proxy that otherwise causes
+/// re-entrant focus / IME deadlocks under our multi-HWND split layout.
+/// Typed as isize so it compares cleanly with the LPARAM the WindowProc
+/// receives.
+pub const OBJID_CLIENT: isize = -4;
 pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_PAINT: u32 = 0x000F;
 pub const WM_TIMER: u32 = 0x0113;

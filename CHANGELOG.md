@@ -15,6 +15,25 @@ the underlying upstream commit when known.
   page-click work; clicks fall through to the terminal when the scrollbar
   is hidden.
 
+### Fixed
+- Ghostty no longer freezes after extended use under heavy ConPTY output
+  (notably while a long Claude Code task streamed through the terminal).
+  The UI thread was deadlocking inside `oleacc!CAccessible::QueryInterface
+  -> SleepConditionVariableSRW`: every cross-pane focus transition caused
+  oleacc to destroy the outgoing surface's MSAA AccWrap synchronously
+  inside `DefWindowProc`, the destructor re-entered our WindowProc via
+  `SetFocus` -> `user32!ImeSystemHandler` -> `oleacc!CreateClient`, and
+  the resulting COM marshaling waited for a reply that the same UI thread
+  needed to pump. Each split being its own `WS_CHILD` HWND (vs.
+  wezterm/rio's single-HWND model) is what wedged the round-trip. Both
+  `surfaceWndProc` and `windowWndProc` now return `0` from
+  `WM_GETOBJECT` for `OBJID_CLIENT`, opting out of the default oleacc
+  proxy entirely. We don't expose terminal-cell-level accessibility
+  today, so the only thing this disables is the generic window-frame
+  proxy a screen reader would otherwise see; once a proper IAccessible
+  / UI Automation provider lands, it can be returned here via
+  `LresultFromObject` instead.
+
 ## win-v1.0.1 — 2026-04-29
 
 ### Added

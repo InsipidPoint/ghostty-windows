@@ -1728,6 +1728,31 @@ fn surfaceWndProc(
             return 0;
         },
 
+        w32.WM_GETOBJECT => {
+            // Opt out of MSAA accessibility for OBJID_CLIENT. Without this,
+            // DefWindowProc creates an oleacc AccWrap proxy for each surface
+            // HWND. When focus moves between split panes (which are sibling
+            // child HWNDs in our layout), oleacc destroys the outgoing
+            // surface's AccWrap synchronously inside DefWindowProc; the
+            // destructor re-enters our WindowProc via SetFocus, which fires
+            // ImeSystemHandler -> oleacc!CreateClient -> COM marshaling that
+            // waits for a reply this thread cannot pump (deep WindowProc
+            // stack). Result: SleepConditionVariableSRW forever — the
+            // ghost-hang dumps all bottom out exactly there.
+            //
+            // wezterm avoids this by being single-HWND (no cross-window
+            // focus dance), so AccWraps that exist there are never
+            // destroyed in this re-entrant pattern. Returning 0 here for
+            // OBJID_CLIENT prevents AccWrap creation for our surface
+            // windows, breaking the chain at the source. We don't expose
+            // terminal-cell-level accessibility today anyway, so the only
+            // thing this disables is the generic window-frame proxy that
+            // screen readers would otherwise see.
+            if (lparam == w32.OBJID_CLIENT) return 0;
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
+
         w32.WM_IME_STARTCOMPOSITION => {
             surface.handleImeStartComposition();
             // Let DefWindowProc show the default composition window.
