@@ -31,8 +31,11 @@ mailbox: termio.Mailbox,
 renderer_state: *renderer.State,
 
 /// A handle to wake up the renderer. This hints to the renderer that
-/// a repaint should happen.
-renderer_wakeup: xev.Async,
+/// a repaint should happen. Pointer (not value) because xev.Async on
+/// the Windows IOCP backend has internal state (guard/wakeup/waiter)
+/// — copying the value gives Termio a dead Async that silently drops
+/// notify() calls. See Surface.zig:696 + termio/Termio.zig.
+renderer_wakeup: *xev.Async,
 
 /// The mailbox for renderer messages.
 renderer_mailbox: *renderer.Thread.Mailbox,
