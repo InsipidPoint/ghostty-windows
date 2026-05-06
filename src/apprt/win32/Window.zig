@@ -1697,6 +1697,20 @@ pub fn windowWndProc(
             window.handleResize();
             return 0;
         },
+        w32.WM_MOVE => {
+            // Top-level move: child surface HWNDs do NOT receive WM_MOVE
+            // (their position relative to the parent is unchanged), but the
+            // scrollbar is a screen-positioned popup that must follow its
+            // owner. Reposition every surface's scrollbar across all tabs
+            // so hidden tabs don't surface a stale position when activated.
+            for (0..window.tab_count) |i| {
+                var it = window.tab_trees[i].iterator();
+                while (it.next()) |entry| {
+                    if (entry.view.scrollbar) |sb| _ = sb.repositionAndResize();
+                }
+            }
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
         w32.WM_GETMINMAXINFO => {
             // Apply user-configured size limits if any. lparam points
             // to a MINMAXINFO the OS will consult for resize clamping.
