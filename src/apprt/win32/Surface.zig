@@ -1591,7 +1591,7 @@ pub fn handleKeyEvent(self: *Surface, wparam: usize, lparam: isize, action: inpu
     // ToUnicode produces text below.
     self.key_event_produced_text = false;
 
-    if (actual_action == .press or actual_action == .repeat) {
+    if ((actual_action == .press or actual_action == .repeat) and !isModifierVk(vk)) {
         var keyboard_state: [256]u8 = undefined;
         if (w32.GetKeyboardState(&keyboard_state) != 0) {
             // Mask to 8 bits — bit 24 of lparam is the extended-key flag,
@@ -1977,9 +1977,12 @@ fn sendWin32InputEvent(self: *Surface, vk: u16, lparam: isize, action: input.Act
     const repeat_count: u16 = @intCast(lparam & 0xFFFF);
     const key_down: u1 = if (action == .press or action == .repeat) 1 else 0;
 
-    // Get the Unicode character for this key via ToUnicode.
+    // Get the Unicode character for this key via ToUnicode. Skip
+    // modifier-only keys: they never produce a character and calling
+    // ToUnicode for them is one of the ways the per-thread kernel
+    // keyboard state can drift over time.
     var unicode_char: u16 = 0;
-    if (key_down == 1) {
+    if (key_down == 1 and !isModifierVk(vk)) {
         var keyboard_state: [256]u8 = undefined;
         if (w32.GetKeyboardState(&keyboard_state) != 0) {
             var utf16_buf: [4]u16 = undefined;
@@ -1993,6 +1996,17 @@ fn sendWin32InputEvent(self: *Surface, vk: u16, lparam: isize, action: input.Act
             );
             if (result > 0) {
                 unicode_char = utf16_buf[0];
+            } else if (result < 0) {
+                // Dead key. utf16_buf[0] holds the dead character;
+                // surface it as Uc so applications reading INPUT_RECORDs
+                // (e.g. Claude Code via ConPTY in Win32 Input Mode) can
+                // see the keystroke. Then drain the kernel state — we're
+                // not going to compose this dead key locally, and any
+                // residual state would corrupt the very next ToUnicode
+                // call, swapping JIS-layout characters for US-layout
+                // ones until ghostty restarts.
+                unicode_char = utf16_buf[0];
+                clearKernelKeyboardState();
             }
         }
     }
@@ -2124,6 +2138,60 @@ fn getModifiers() input.Mods {
     }
 
     return mods;
+}
+
+/// True for VKs that on their own never produce a character (Shift, Ctrl,
+/// Alt, Win, lock keys). Calling ToUnicode for these is wasted at best and
+/// can perturb the kernel's per-thread keyboard state at worst (in
+/// particular, ToUnicode buffers any pending dead key into kernel state
+/// even when the result is unused).
+fn isModifierVk(vk: u16) bool {
+    return switch (vk) {
+        w32.VK_SHIFT,
+        w32.VK_LSHIFT,
+        w32.VK_RSHIFT,
+        w32.VK_CONTROL,
+        w32.VK_LCONTROL,
+        w32.VK_RCONTROL,
+        w32.VK_MENU,
+        w32.VK_LMENU,
+        w32.VK_RMENU,
+        w32.VK_LWIN,
+        w32.VK_RWIN,
+        w32.VK_CAPITAL,
+        w32.VK_NUMLOCK,
+        w32.VK_SCROLL,
+        => true,
+        else => false,
+    };
+}
+
+/// Drain any buffered dead-key state from the kernel's per-thread
+/// keyboard state. ToUnicode returns -1 when the input is a dead key and
+/// stores the dead character in kernel state; the next ToUnicode call
+/// then composes against that buffered character. When we forward the
+/// raw key event verbatim (e.g. via Win32 Input Mode), there's no later
+/// composition to consume the buffered dead key, and it would silently
+/// corrupt every subsequent translation in this thread until ghostty
+/// exits — which manifests as a JIS layout appearing to switch to US in
+/// applications reading INPUT_RECORDs from ConPTY. We clock ToUnicode
+/// with a non-dead-key VK (numpad decimal) and an empty modifier state
+/// until it stops returning negative, mirroring wezterm's
+/// `KeyboardLayoutInfo::clear_key_state`.
+fn clearKernelKeyboardState() void {
+    var out_buf: [16]u16 = undefined;
+    const empty_state: [256]u8 = [_]u8{0} ** 256;
+    var guard: u8 = 0;
+    while (w32.ToUnicode(
+        w32.VK_DECIMAL,
+        0,
+        &empty_state,
+        &out_buf,
+        out_buf.len,
+        0,
+    ) < 0) : (guard += 1) {
+        if (guard >= 8) break;
+    }
 }
 
 /// Map a Win32 virtual key code to a Ghostty input.Key.
