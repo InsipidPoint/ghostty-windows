@@ -15,6 +15,15 @@ the underlying upstream commit when known.
   page-click work; clicks fall through to the terminal when the scrollbar
   is hidden.
 
+### Fixed
+- Alt-modified keybindings (`Alt+-`, `Alt+\`, `Alt+letter`, …) no longer
+  ring the system bell on press. `TranslateMessage` synthesizes a
+  `WM_SYSCHAR` after every `WM_SYSKEYDOWN` with a printable character,
+  and forwarding `WM_SYSCHAR` to `DefWindowProc` was treating it as an
+  unmatched menu accelerator and triggering `MessageBeep`. The keystroke
+  itself is dispatched in `WM_SYSKEYDOWN`, so the new `WM_SYSCHAR`
+  handler simply consumes the message.
+
 ## win-v1.0.1 — 2026-04-29
 
 ### Added
