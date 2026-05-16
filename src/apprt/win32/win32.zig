@@ -145,9 +145,11 @@ pub const WM_EXITSIZEMOVE: u32 = 0x0232;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_CHAR: u32 = 0x0102;
+pub const WM_DEADCHAR: u32 = 0x0103;
 pub const WM_SYSKEYDOWN: u32 = 0x0104;
 pub const WM_SYSKEYUP: u32 = 0x0105;
 pub const WM_SYSCHAR: u32 = 0x0106;
+pub const WM_SYSDEADCHAR: u32 = 0x0107;
 pub const WM_MOUSEMOVE: u32 = 0x0200;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_LBUTTONUP: u32 = 0x0202;
@@ -428,6 +430,15 @@ pub extern "user32" fn GetWindowLongPtrW(
     hWnd: HWND,
     nIndex: i32,
 ) callconv(.winapi) isize;
+
+// Safe only for 16-bit GCW_* indices (e.g. GCW_ATOM). For pointer-sized
+// GCLP_* indices use GetClassLongPtrW.
+pub extern "user32" fn GetClassLongW(
+    hWnd: HWND,
+    nIndex: i32,
+) callconv(.winapi) u32;
+
+pub const GCW_ATOM: i32 = -32;
 
 pub const GetCursorPos_ = struct {
     extern "user32" fn GetCursorPos(
