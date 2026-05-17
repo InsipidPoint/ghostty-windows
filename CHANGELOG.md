@@ -69,6 +69,20 @@ the underlying upstream commit when known.
   PowerShell prompt now correctly produces `ã`. Edit controls (search
   bar, command palette, tab rename) are unaffected and still receive
   `TranslateMessage`.
+- `shift+5`, `ctrl+u`, `ctrl+d`, `ctrl+f`, arrow keys, and `enter` no
+  longer drop their effective character when typed into applications
+  that use Win32 Input Mode (notably Claude Code's prompt via ConPTY):
+  on a JIS layout `shift+5` was arriving as `5` instead of `%`. The
+  trigger was Claude enabling kitty-keyboard / modifyOtherKeys on top
+  of Win32 Input Mode, after which `core_surface.keyCallback` would
+  encode the keystroke through the legacy/kitty path *and* return
+  `.consumed` — the apprt then suppressed its own
+  `\x1b[Vk;Sc;Uc;Kd;Cs;Rc_` sequence, so the receiving app only ever
+  saw the core encoding (a kitty-kbd CSI for `shift+5` that Claude
+  rendered as `5`). Win32 Input Mode is the apprt's exclusive wire
+  format, so `Surface.encodeKey` now short-circuits whenever DEC mode
+  9001 is active. Bindings still fire (binding lookup runs before
+  `encodeKey`); modifier release tracking still works.
 
 ## win-v1.0.1 — 2026-04-29
 
