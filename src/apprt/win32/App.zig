@@ -395,12 +395,26 @@ pub fn performAction(
         },
 
         .new_window => {
+            // Inherit opacity-toggle state from the parent window: if the
+            // user toggled it to opaque via toggle_background_opacity, the
+            // new window should start opaque too. Mirrors macOS behavior
+            // from upstream e5c31e8b3 (#11583).
+            const force_opaque: bool = switch (target) {
+                .app => false,
+                .surface => |cs| blk: {
+                    if (self.config.@"background-opacity" >= 1.0) break :blk false;
+                    const h = cs.rt_surface.parent_window.hwnd orelse break :blk false;
+                    const ex = w32.GetWindowLongW(h, w32.GWL_EXSTYLE);
+                    break :blk (ex & w32.WS_EX_LAYERED) == 0;
+                },
+            };
+
             const alloc = self.core_app.alloc;
             const window = alloc.create(Window) catch |err| {
                 log.err("failed to allocate new window err={}", .{err});
                 return true;
             };
-            window.init(self, .{}) catch |err| {
+            window.init(self, .{ .force_opaque = force_opaque }) catch |err| {
                 log.err("failed to init new window err={}", .{err});
                 alloc.destroy(window);
                 return true;

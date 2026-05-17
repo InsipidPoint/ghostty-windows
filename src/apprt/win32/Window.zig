@@ -116,6 +116,10 @@ max_track_h: i32 = 0,
 
 pub const InitOptions = struct {
     is_quick_terminal: bool = false,
+    /// If true, start fully opaque regardless of `background-opacity`. Set
+    /// when `new_window` inherits from a parent window the user had
+    /// toggled to opaque via `toggle_background_opacity`.
+    force_opaque: bool = false,
 };
 
 /// Apply DWM dark/light + caption color based on the configured
@@ -220,7 +224,9 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
     );
 
     // If background opacity is less than 1.0, make the window transparent.
-    if (app.config.@"background-opacity" < 1.0) {
+    // Skip when force_opaque (parent window was toggled to opaque via
+    // toggle_background_opacity — inherit that state for the new window).
+    if (app.config.@"background-opacity" < 1.0 and !options.force_opaque) {
         const current_ex = w32.GetWindowLongW(hwnd, w32.GWL_EXSTYLE);
         _ = w32.SetWindowLongW(hwnd, w32.GWL_EXSTYLE, current_ex | w32.WS_EX_LAYERED);
         const alpha: u8 = @intFromFloat(@round(app.config.@"background-opacity" * 255.0));
