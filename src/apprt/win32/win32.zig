@@ -774,6 +774,7 @@ pub const WM_CTLCOLOREDIT: u32 = 0x0133;
 
 // Edit control notification codes (high word of wParam in WM_COMMAND)
 pub const EN_CHANGE: u16 = 0x0300;
+pub const EN_KILLFOCUS: u16 = 0x0200;
 
 // Edit control styles
 pub const ES_AUTOHSCROLL: u32 = 0x0080;

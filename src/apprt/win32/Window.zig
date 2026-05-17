@@ -1501,11 +1501,20 @@ pub fn startTabRename(self: *Window, tab_idx: usize) void {
     const hwnd = self.hwnd orelse return;
     const rect = self.tab_rects[tab_idx];
 
+    // tab_titles stores only `tab_title_lens` valid u16s; the rest is
+    // uninitialized. CreateWindowExW reads a NUL-terminated wide string,
+    // so a NUL-terminated copy avoids the Edit displaying garbage past
+    // the real title.
+    var title_buf: [257]u16 = undefined;
+    const tlen = self.tab_title_lens[tab_idx];
+    @memcpy(title_buf[0..tlen], self.tab_titles[tab_idx][0..tlen]);
+    title_buf[tlen] = 0;
+
     // Create an Edit control overlaid on the tab
     const edit = w32.CreateWindowExW(
         0,
         std.unicode.utf8ToUtf16LeStringLiteral("EDIT"),
-        @ptrCast(&self.tab_titles[tab_idx]),
+        @ptrCast(&title_buf),
         w32.WS_CHILD | w32.WS_VISIBLE_STYLE | w32.ES_AUTOHSCROLL | w32.WS_BORDER,
         rect.left + 2,
         rect.top + 2,
@@ -1564,8 +1573,12 @@ pub fn finishTabRename(self: *Window) void {
         if (tab_idx == self.active_tab) self.updateWindowTitle();
     }
 
-    _ = w32.DestroyWindow(edit);
+    // Clear our state BEFORE DestroyWindow: the Edit synchronously emits
+    // EN_KILLFOCUS as it's torn down, which re-enters this function via
+    // the WM_COMMAND handler. The early `orelse return` then makes that
+    // re-entrant call a no-op.
     self.rename_edit = null;
+    _ = w32.DestroyWindow(edit);
     if (self.rename_font) |f| { _ = w32.DeleteObject(f); self.rename_font = null; }
     self.invalidateTabBar();
 
@@ -1578,8 +1591,9 @@ pub fn finishTabRename(self: *Window) void {
 /// Cancel inline rename without applying changes.
 pub fn cancelTabRename(self: *Window) void {
     if (self.rename_edit) |edit| {
-        _ = w32.DestroyWindow(edit);
+        // Same re-entry concern as finishTabRename: null before destroy.
         self.rename_edit = null;
+        _ = w32.DestroyWindow(edit);
         if (self.rename_font) |f| { _ = w32.DeleteObject(f); self.rename_font = null; }
         if (self.getActiveSurface()) |s| {
             if (s.hwnd) |h| _ = w32.SetFocus(h);
@@ -1769,6 +1783,19 @@ pub fn windowWndProc(
         w32.WM_PAINT => {
             window.paintTabBar();
             return 0;
+        },
+        w32.WM_COMMAND => {
+            const notification: u16 = @intCast((wparam >> 16) & 0xFFFF);
+            const control_id: u16 = @intCast(wparam & 0xFFFF);
+            // Tab rename Edit lost focus — commit (standard Win32
+            // convention, matches Explorer file rename and Edge tabs).
+            // Esc still cancels via the message-loop intercept that
+            // catches VK_ESCAPE before it reaches the Edit.
+            if (control_id == RENAME_EDIT_ID and notification == w32.EN_KILLFOCUS) {
+                window.finishTabRename();
+                return 0;
+            }
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         w32.WM_SETFOCUS => {
             // Forward keyboard focus to the active child surface.

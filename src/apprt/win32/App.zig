@@ -1888,11 +1888,20 @@ fn surfaceWndProc(
                 }
                 return 0;
             }
+            // Take keyboard focus on click. WS_CHILD windows don't
+            // auto-focus the way top-level windows do, so without this
+            // an active sibling popup edit (tab rename, search, palette)
+            // keeps focus and the click never commits/dismisses it.
+            _ = w32.SetFocus(hwnd);
             surface.handleMouseButton(.left, .press, lparam);
             return 0;
         },
         w32.WM_LBUTTONUP => { surface.handleMouseButton(.left, .release, lparam); return 0; },
-        w32.WM_RBUTTONDOWN => { surface.handleMouseButton(.right, .press, lparam); return 0; },
+        w32.WM_RBUTTONDOWN => {
+            _ = w32.SetFocus(hwnd);
+            surface.handleMouseButton(.right, .press, lparam);
+            return 0;
+        },
         w32.WM_RBUTTONUP => { surface.handleMouseButton(.right, .release, lparam); return 0; },
         w32.WM_MBUTTONDOWN => { surface.handleMouseButton(.middle, .press, lparam); return 0; },
         w32.WM_MBUTTONUP => { surface.handleMouseButton(.middle, .release, lparam); return 0; },
