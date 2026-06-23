@@ -38,6 +38,21 @@ jobs:
           # Pinned to build.zig.zon's minimum_zig_version.
           version: 0.15.2
 
+      # GitHub-hosted windows-latest runs Windows Defender, whose real-time
+      # scanning transiently locks freshly-created files. That makes
+      # std.fs.AtomicFile's write->rename fail with AccessDenied (e.g. the
+      # ssh-cache DiskCache tests). Exclude the workspace from scanning so the
+      # atomic renames succeed.
+      - name: Exclude workspace from Defender
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}" -ErrorAction Stop
+            Write-Host "Added Defender exclusion for ${{ github.workspace }}"
+          } catch {
+            Write-Host "Could not set Defender exclusion (continuing): $_"
+          }
+
       # app-runtime=win32 is this project's native Windows application
       # runtime. We target the GNU ABI because the MSVC ABI can't yet
       # locate the MSVC libc/c++ headers under Zig; this matches the
