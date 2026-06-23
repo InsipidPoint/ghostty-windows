@@ -895,12 +895,17 @@ pub fn performAction(
                     if (core_surface.rt_surface.parent_window.hwnd) |h| {
                         // Reset to default 800x600
                         var rect = w32.RECT{
-                            .left = 0, .top = 0,
-                            .right = 800, .bottom = 600,
+                            .left = 0,
+                            .top = 0,
+                            .right = 800,
+                            .bottom = 600,
                         };
                         _ = w32.AdjustWindowRectEx(&rect, w32.WS_OVERLAPPEDWINDOW, 0, 0);
                         _ = w32.SetWindowPos(
-                            h, null, 0, 0,
+                            h,
+                            null,
+                            0,
+                            0,
                             rect.right - rect.left,
                             rect.bottom - rect.top,
                             w32.SWP_NOZORDER | w32.SWP_NOMOVE,
@@ -1056,7 +1061,10 @@ pub fn performAction(
                     _ = w32.SetWindowPos(
                         win_hwnd,
                         insert_after,
-                        0, 0, 0, 0,
+                        0,
+                        0,
+                        0,
+                        0,
                         w32.SWP_NOMOVE | w32.SWP_NOSIZE | w32.SWP_NOACTIVATE,
                     );
                 },
@@ -1307,16 +1315,42 @@ fn registerGlobalHotkey(self: *App) void {
 /// Map a Ghostty physical key to a Win32 virtual key code.
 fn keyToVk(key: @import("../../input/key.zig").Key) ?u32 {
     return switch (key) {
-        .key_a => 0x41, .key_b => 0x42, .key_c => 0x43, .key_d => 0x44,
-        .key_e => 0x45, .key_f => 0x46, .key_g => 0x47, .key_h => 0x48,
-        .key_i => 0x49, .key_j => 0x4A, .key_k => 0x4B, .key_l => 0x4C,
-        .key_m => 0x4D, .key_n => 0x4E, .key_o => 0x4F, .key_p => 0x50,
-        .key_q => 0x51, .key_r => 0x52, .key_s => 0x53, .key_t => 0x54,
-        .key_u => 0x55, .key_v => 0x56, .key_w => 0x57, .key_x => 0x58,
-        .key_y => 0x59, .key_z => 0x5A,
-        .digit_0 => 0x30, .digit_1 => 0x31, .digit_2 => 0x32, .digit_3 => 0x33,
-        .digit_4 => 0x34, .digit_5 => 0x35, .digit_6 => 0x36, .digit_7 => 0x37,
-        .digit_8 => 0x38, .digit_9 => 0x39,
+        .key_a => 0x41,
+        .key_b => 0x42,
+        .key_c => 0x43,
+        .key_d => 0x44,
+        .key_e => 0x45,
+        .key_f => 0x46,
+        .key_g => 0x47,
+        .key_h => 0x48,
+        .key_i => 0x49,
+        .key_j => 0x4A,
+        .key_k => 0x4B,
+        .key_l => 0x4C,
+        .key_m => 0x4D,
+        .key_n => 0x4E,
+        .key_o => 0x4F,
+        .key_p => 0x50,
+        .key_q => 0x51,
+        .key_r => 0x52,
+        .key_s => 0x53,
+        .key_t => 0x54,
+        .key_u => 0x55,
+        .key_v => 0x56,
+        .key_w => 0x57,
+        .key_x => 0x58,
+        .key_y => 0x59,
+        .key_z => 0x5A,
+        .digit_0 => 0x30,
+        .digit_1 => 0x31,
+        .digit_2 => 0x32,
+        .digit_3 => 0x33,
+        .digit_4 => 0x34,
+        .digit_5 => 0x35,
+        .digit_6 => 0x36,
+        .digit_7 => 0x37,
+        .digit_8 => 0x38,
+        .digit_9 => 0x39,
         .backquote => w32.VK_OEM_3,
         .minus => w32.VK_OEM_MINUS,
         .equal => w32.VK_OEM_PLUS,
@@ -1333,10 +1367,18 @@ fn keyToVk(key: @import("../../input/key.zig").Key) ?u32 {
         .space => w32.VK_SPACE,
         .backspace => w32.VK_BACK,
         .escape => w32.VK_ESCAPE,
-        .f1 => w32.VK_F1, .f2 => w32.VK_F2, .f3 => w32.VK_F3,
-        .f4 => w32.VK_F4, .f5 => w32.VK_F5, .f6 => w32.VK_F6,
-        .f7 => w32.VK_F7, .f8 => w32.VK_F8, .f9 => w32.VK_F9,
-        .f10 => w32.VK_F10, .f11 => w32.VK_F11, .f12 => w32.VK_F12,
+        .f1 => w32.VK_F1,
+        .f2 => w32.VK_F2,
+        .f3 => w32.VK_F3,
+        .f4 => w32.VK_F4,
+        .f5 => w32.VK_F5,
+        .f6 => w32.VK_F6,
+        .f7 => w32.VK_F7,
+        .f8 => w32.VK_F8,
+        .f9 => w32.VK_F9,
+        .f10 => w32.VK_F10,
+        .f11 => w32.VK_F11,
+        .f12 => w32.VK_F12,
         else => null,
     };
 }
@@ -1850,7 +1892,6 @@ fn surfaceWndProc(
             return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
-
         w32.WM_IME_STARTCOMPOSITION => {
             surface.handleImeStartComposition();
             // Let DefWindowProc show the default composition window.
@@ -1896,19 +1937,28 @@ fn surfaceWndProc(
             surface.handleMouseButton(.left, .press, lparam);
             return 0;
         },
-        w32.WM_LBUTTONUP => { surface.handleMouseButton(.left, .release, lparam); return 0; },
+        w32.WM_LBUTTONUP => {
+            surface.handleMouseButton(.left, .release, lparam);
+            return 0;
+        },
         w32.WM_RBUTTONDOWN => {
             _ = w32.SetFocus(hwnd);
             surface.handleMouseButton(.right, .press, lparam);
             return 0;
         },
-        w32.WM_RBUTTONUP => { surface.handleMouseButton(.right, .release, lparam); return 0; },
+        w32.WM_RBUTTONUP => {
+            surface.handleMouseButton(.right, .release, lparam);
+            return 0;
+        },
         w32.WM_MBUTTONDOWN => {
             _ = w32.SetFocus(hwnd);
             surface.handleMouseButton(.middle, .press, lparam);
             return 0;
         },
-        w32.WM_MBUTTONUP => { surface.handleMouseButton(.middle, .release, lparam); return 0; },
+        w32.WM_MBUTTONUP => {
+            surface.handleMouseButton(.middle, .release, lparam);
+            return 0;
+        },
 
         w32.WM_MOUSEMOVE => {
             surface.handleMouseMove(lparam);
@@ -2004,7 +2054,10 @@ fn surfaceWndProc(
             surface.handleFocus(true);
             return 0;
         },
-        w32.WM_KILLFOCUS => { surface.handleFocus(false); return 0; },
+        w32.WM_KILLFOCUS => {
+            surface.handleFocus(false);
+            return 0;
+        },
 
         else => return w32.DefWindowProcW(hwnd, msg, wparam, lparam),
     }
