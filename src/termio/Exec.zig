@@ -1658,10 +1658,14 @@ fn execCommand(
                 // (extra process in the tree, per-process cmd AutoRun
                 // state not reaching the user's actual shell).
                 //
-                // Values with arguments are split on whitespace. This
-                // does not honor Windows CLI quoting rules; users who
-                // need quoted arguments should use the direct command
-                // form, which takes an argv array as-is.
+                // Values with arguments are split using Windows
+                // command-line quoting rules, so paths containing
+                // spaces can be double-quoted:
+                //
+                //   command = "C:\Program Files\Git\bin\bash.exe" -i -l
+                //
+                // Users who need argv passed through with no parsing
+                // at all should use the direct command form.
                 //
                 // Note we don't free any of the memory below since it is
                 // allocated in the arena.
@@ -1678,7 +1682,8 @@ fn execCommand(
                         try alloc.dupe(u8, v);
                     try args.append(alloc, try alloc.dupeZ(u8, argv0));
                 } else {
-                    var it = std.mem.tokenizeAny(u8, v, " \t");
+                    var it = try std.process.ArgIteratorGeneral(.{}).init(alloc, v);
+                    defer it.deinit();
                     while (it.next()) |tok| {
                         try args.append(alloc, try alloc.dupeZ(u8, tok));
                     }
@@ -1929,6 +1934,30 @@ test "execCommand windows: shell with args is split on whitespace" {
     try testing.expectEqual(2, result.len);
     try testing.expectEqualStrings("wsl", result[0]);
     try testing.expectEqualStrings("~", result[1]);
+}
+
+test "execCommand windows: quoted path with spaces stays one token" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try execCommand(
+        alloc,
+        .{ .shell = "\"C:\\Program Files\\Git\\bin\\bash.exe\" -i -l" },
+        struct {
+            fn get(_: Allocator) !PasswdEntry {
+                return .{};
+            }
+        },
+    );
+
+    try testing.expectEqual(3, result.len);
+    try testing.expectEqualStrings("C:\\Program Files\\Git\\bin\\bash.exe", result[0]);
+    try testing.expectEqualStrings("-i", result[1]);
+    try testing.expectEqualStrings("-l", result[2]);
 }
 
 test "execCommand windows: direct command is passed through unchanged" {
