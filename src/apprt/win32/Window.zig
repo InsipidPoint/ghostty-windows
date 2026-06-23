@@ -1220,19 +1220,11 @@ pub fn toggleFullscreen(self: *Window) void {
         var mi: w32.MONITORINFO = undefined;
         mi.cbSize = @sizeOf(w32.MONITORINFO);
         if (w32.GetMonitorInfoW(monitor, &mi) != 0) {
-            _ = w32.SetWindowPos(hwnd, null,
-                mi.rcMonitor.left, mi.rcMonitor.top,
-                mi.rcMonitor.right - mi.rcMonitor.left,
-                mi.rcMonitor.bottom - mi.rcMonitor.top,
-                w32.SWP_NOZORDER | w32.SWP_FRAMECHANGED);
+            _ = w32.SetWindowPos(hwnd, null, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, w32.SWP_NOZORDER | w32.SWP_FRAMECHANGED);
         }
     } else {
         _ = w32.SetWindowLongW(hwnd, w32.GWL_STYLE, self.saved_style);
-        _ = w32.SetWindowPos(hwnd, null,
-            self.saved_rect.left, self.saved_rect.top,
-            self.saved_rect.right - self.saved_rect.left,
-            self.saved_rect.bottom - self.saved_rect.top,
-            w32.SWP_NOZORDER | w32.SWP_FRAMECHANGED);
+        _ = w32.SetWindowPos(hwnd, null, self.saved_rect.left, self.saved_rect.top, self.saved_rect.right - self.saved_rect.left, self.saved_rect.bottom - self.saved_rect.top, w32.SWP_NOZORDER | w32.SWP_FRAMECHANGED);
     }
     self.is_fullscreen = !self.is_fullscreen;
 }
@@ -1253,8 +1245,7 @@ pub fn toggleWindowDecorations(self: *Window) void {
         _ = w32.SetWindowLongW(hwnd, w32.GWL_STYLE, new_style);
     }
     // Force frame recalculation.
-    _ = w32.SetWindowPos(hwnd, null, 0, 0, 0, 0,
-        w32.SWP_NOZORDER | w32.SWP_FRAMECHANGED | w32.SWP_NOMOVE | w32.SWP_NOSIZE);
+    _ = w32.SetWindowPos(hwnd, null, 0, 0, 0, 0, w32.SWP_NOZORDER | w32.SWP_FRAMECHANGED | w32.SWP_NOMOVE | w32.SWP_NOSIZE);
 }
 
 /// Handle WM_SIZE: re-layout the active tab's split panes and repaint tab bar.
@@ -1543,7 +1534,18 @@ pub fn startTabRename(self: *Window, tab_idx: usize) void {
     // Set font — stored for cleanup
     self.rename_font = w32.CreateFontW(
         -@as(i32, @intFromFloat(@round(12.0 * self.scale))),
-        0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI"),
     );
     if (self.rename_font) |f| {
@@ -1579,7 +1581,10 @@ pub fn finishTabRename(self: *Window) void {
     // re-entrant call a no-op.
     self.rename_edit = null;
     _ = w32.DestroyWindow(edit);
-    if (self.rename_font) |f| { _ = w32.DeleteObject(f); self.rename_font = null; }
+    if (self.rename_font) |f| {
+        _ = w32.DeleteObject(f);
+        self.rename_font = null;
+    }
     self.invalidateTabBar();
 
     // Return focus to the active surface
@@ -1594,7 +1599,10 @@ pub fn cancelTabRename(self: *Window) void {
         // Same re-entry concern as finishTabRename: null before destroy.
         self.rename_edit = null;
         _ = w32.DestroyWindow(edit);
-        if (self.rename_font) |f| { _ = w32.DeleteObject(f); self.rename_font = null; }
+        if (self.rename_font) |f| {
+            _ = w32.DeleteObject(f);
+            self.rename_font = null;
+        }
         if (self.getActiveSurface()) |s| {
             if (s.hwnd) |h| _ = w32.SetFocus(h);
         }

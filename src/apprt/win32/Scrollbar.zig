@@ -213,7 +213,10 @@ pub const Scrollbar = struct {
             WINDOW_CLASS_NAME,
             std.unicode.utf8ToUtf16LeStringLiteral(""),
             style,
-            0, 0, 1, 1, // placeholder rect — repositionAndResize() sets the real one
+            0,
+            0,
+            1,
+            1, // placeholder rect — repositionAndResize() sets the real one
             owner, // owner (popup, not parent)
             null,
             surface.app.hinstance,
@@ -374,8 +377,7 @@ pub const Scrollbar = struct {
             },
         };
 
-        const bitmap = w32.CreateDIBSection(mem_dc, &bmi, w32.DIB_RGB_COLORS, &bits, null, 0)
-            orelse return;
+        const bitmap = w32.CreateDIBSection(mem_dc, &bmi, w32.DIB_RGB_COLORS, &bits, null, 0) orelse return;
         defer _ = w32.DeleteObject(bitmap);
 
         const old = w32.SelectObject(mem_dc, bitmap);
@@ -437,9 +439,7 @@ pub const Scrollbar = struct {
     }
 
     fn thumbAlpha(self: *const Scrollbar) u8 {
-        const base = if (self.dragging) ALPHA_DRAG
-            else if (self.hover) ALPHA_HOVER
-            else ALPHA_IDLE;
+        const base = if (self.dragging) ALPHA_DRAG else if (self.hover) ALPHA_HOVER else ALPHA_IDLE;
         return switch (self.mode) {
             .always_visible => base,
             .overlay => effectiveAlpha(base, self.fade),

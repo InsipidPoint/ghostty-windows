@@ -1,0 +1,81 @@
+# Lightweight CI for the Windows port, runnable on this fork.
+#
+# The inherited upstream `test.yml` is gated to `ghostty-org/ghostty` and
+# targets paid Namespace runners, so none of it runs here. This workflow
+# uses free GitHub-hosted runners (standard runners are free with
+# unlimited minutes on public repositories) to give every push and pull
+# request a real Windows build + test and a format check.
+name: Windows CI
+
+on:
+  # Run after merges land on main...
+  push:
+    branches: [main]
+  # ...and on every pull request targeting the repo.
+  pull_request: {}
+  # Allow manual runs from the Actions tab (once this file is on main).
+  workflow_dispatch: {}
+
+# Only keep the latest run per ref; cancel superseded in-progress runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Build & Test (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # setup-zig caches the global Zig cache (compiler + fetched deps)
+      # keyed on build.zig.zon, so repeat runs skip re-downloading deps.
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          # Pinned to build.zig.zon's minimum_zig_version.
+          version: 0.15.2
+
+      # GitHub-hosted windows-latest runs Windows Defender, whose real-time
+      # scanning transiently locks freshly-created files. That makes
+      # std.fs.AtomicFile's write->rename fail with AccessDenied (e.g. the
+      # ssh-cache DiskCache tests). Exclude the workspace from scanning so the
+      # atomic renames succeed.
+      - name: Exclude workspace from Defender
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}" -ErrorAction Stop
+            Write-Host "Added Defender exclusion for ${{ github.workspace }}"
+          } catch {
+            Write-Host "Could not set Defender exclusion (continuing): $_"
+          }
+
+      # app-runtime=win32 is this project's native Windows application
+      # runtime. We target the GNU ABI because the MSVC ABI can't yet
+      # locate the MSVC libc/c++ headers under Zig; this matches the
+      # invocation verified on the Windows command-quoting fix.
+      - name: Test
+        run: zig build test -Dapp-runtime=win32 -Dtarget=x86_64-windows-gnu
+
+      # Full app build, which also compiles dist/windows/ghostty.rc.
+      - name: Build
+        run: zig build -Dapp-runtime=win32 -Dtarget=x86_64-windows-gnu
+
+  fmt:
+    name: zig fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: zig fmt
+        run: zig fmt --check .

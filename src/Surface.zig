@@ -557,7 +557,7 @@ pub fn init(
 
     log.debug("size computed: screen={}x{} cell={}x{}", .{
         size.screen.width, size.screen.height,
-        size.cell.width, size.cell.height,
+        size.cell.width,   size.cell.height,
     });
 
     // Create our terminal grid with the initial size
