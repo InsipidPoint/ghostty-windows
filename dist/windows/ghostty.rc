@@ -15,6 +15,12 @@ ID_ICON_GHOSTTY ICON "ghostty.ico"
 //
 // Update FILEVERSION/PRODUCTVERSION when bumping for a release. The
 // commas in the comma-form are 16-bit fields: MAJOR,MINOR,PATCH,BUILD.
+//
+// VS_VERSION_INFO must resolve to numeric resource ID 1; winres.h
+// normally defines it, but this file is compiled without it, so the
+// block would otherwise become a named resource that GetFileVersionInfo
+// and Explorer never find.
+#define VS_VERSION_INFO 1
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION    1,0,1,0
 PRODUCTVERSION 1,0,1,0
