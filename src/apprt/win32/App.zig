@@ -1244,7 +1244,15 @@ pub fn performAction(
             return true;
         },
 
-        // All 65 apprt actions are now handled above.
+        .selection_changed => {
+            // Win32 has no primary-selection clipboard to keep in sync (that
+            // is an X11/Wayland concept), so there is nothing to do when the
+            // core selection changes. Acknowledge the notification, mirroring
+            // the GTK apprt which also treats selection_changed as a no-op.
+            return true;
+        },
+
+        // All 66 apprt actions are now handled above.
     }
 }
 
