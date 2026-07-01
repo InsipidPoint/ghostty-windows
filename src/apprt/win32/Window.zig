@@ -201,7 +201,13 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
         .is_quick_terminal = options.is_quick_terminal,
     };
 
-    const style: u32 = if (options.is_quick_terminal) w32.WS_POPUP else w32.WS_OVERLAPPEDWINDOW;
+    const style: u32 = if (options.is_quick_terminal)
+        w32.WS_POPUP
+    else if (app.config.@"window-decoration" == .none)
+        // Borderless but still resizable: thin sizing frame, no title bar.
+        w32.WS_POPUP | w32.WS_THICKFRAME
+    else
+        w32.WS_OVERLAPPEDWINDOW;
     const ex_style: u32 = if (options.is_quick_terminal) w32.WS_EX_TOOLWINDOW else 0;
 
     // Cascade non-quick-terminal windows: stack each new window 30px
@@ -211,7 +217,16 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
     const cascade_step: i32 = 30;
     var cx: i32 = w32.CW_USEDEFAULT;
     var cy: i32 = w32.CW_USEDEFAULT;
-    if (!options.is_quick_terminal and app.windows.items.len > 0) {
+    // Honor an explicit configured window position; it takes precedence over
+    // the cascade below.
+    if (!options.is_quick_terminal) {
+        if (app.config.@"window-position-x") |px| cx = px;
+        if (app.config.@"window-position-y") |py| cy = py;
+    }
+    if (!options.is_quick_terminal and
+        cx == w32.CW_USEDEFAULT and cy == w32.CW_USEDEFAULT and
+        app.windows.items.len > 0)
+    {
         // Find the previously created window's position and bump.
         const prev = app.windows.items[app.windows.items.len - 1];
         if (prev.hwnd) |ph| {
