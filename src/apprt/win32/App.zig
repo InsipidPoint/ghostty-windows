@@ -89,6 +89,12 @@ quick_terminal: ?*QuickTerminal = null,
 /// single quick-terminal hotkey to every keybind flagged `global:`.
 global_hotkeys: std.ArrayList(GlobalHotkey) = .empty,
 
+/// Cached ITaskbarList3 for taskbar-button progress (OSC 9;4), created lazily
+/// on first progress_report. Null until then / if COM creation fails.
+taskbar: ?*w32.ITaskbarList3 = null,
+/// Whether CoInitializeEx has been called on the main thread.
+com_initialized: bool = false,
+
 pub fn init(
     self: *App,
     core_app: *CoreApp,
@@ -368,6 +374,12 @@ pub fn terminate(self: *App) void {
     // Unregister all global hotkeys.
     for (self.global_hotkeys.items) |hk| _ = w32.UnregisterHotKey(null, hk.id);
     self.global_hotkeys.deinit(self.core_app.alloc);
+
+    // Release the taskbar COM object if we created one.
+    if (self.taskbar) |tb| {
+        tb.Release();
+        self.taskbar = null;
+    }
 
     // Destroy quick terminal if active.
     if (self.quick_terminal) |qt| {
@@ -974,7 +986,6 @@ pub fn performAction(
         .key_table,
         .pwd,
         .cell_size,
-        .progress_report,
         .readonly,
         // Platform-specific actions that don't apply on Windows:
         .secure_input, // macOS EnableSecureEventInput
@@ -985,6 +996,38 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .progress_report => {
+            // Reflect shell/TUI progress (OSC 9;4) on the taskbar button, the
+            // Windows equivalent of the macOS Dock progress. Gated on
+            // progress-style; the win32 apprt has no progress bar of its own.
+            if (!self.config.@"progress-style") return true;
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    const hwnd = core_surface.rt_surface.parent_window.hwnd orelse
+                        return true;
+                    const tb = self.taskbarList() orelse return true;
+                    switch (value.state) {
+                        .remove => tb.SetProgressState(hwnd, w32.TBPF_NOPROGRESS),
+                        .indeterminate => tb.SetProgressState(hwnd, w32.TBPF_INDETERMINATE),
+                        .set => {
+                            tb.SetProgressState(hwnd, w32.TBPF_NORMAL);
+                            if (value.progress) |p| tb.SetProgressValue(hwnd, p, 100);
+                        },
+                        .@"error" => {
+                            tb.SetProgressState(hwnd, w32.TBPF_ERROR);
+                            if (value.progress) |p| tb.SetProgressValue(hwnd, p, 100);
+                        },
+                        .pause => {
+                            tb.SetProgressState(hwnd, w32.TBPF_PAUSED);
+                            if (value.progress) |p| tb.SetProgressValue(hwnd, p, 100);
+                        },
+                    }
+                },
+            }
+            return true;
+        },
 
         .color_change => {
             // Track terminal background color changes (OSC 10/11) so the
@@ -1278,6 +1321,34 @@ fn isEditShortcutVk(vk: u16) bool {
 
 /// Register a system-wide hotkey for toggle_quick_terminal.
 /// Scans keybinds for entries with the `global` flag.
+/// Lazily create (and cache) the shell ITaskbarList3 used for taskbar-button
+/// progress. Returns null if COM or the taskbar object is unavailable.
+fn taskbarList(self: *App) ?*w32.ITaskbarList3 {
+    if (self.taskbar) |tb| return tb;
+
+    // COM must be initialized on this (the UI) thread before CoCreateInstance.
+    // S_FALSE (already initialized) is fine; we only need it done once.
+    if (!self.com_initialized) {
+        _ = w32.CoInitializeEx(null, w32.COINIT_APARTMENTTHREADED);
+        self.com_initialized = true;
+    }
+
+    var ptr: ?*anyopaque = null;
+    const hr = w32.CoCreateInstance(
+        &w32.CLSID_TaskbarList,
+        null,
+        w32.CLSCTX_INPROC_SERVER,
+        &w32.IID_ITaskbarList3,
+        &ptr,
+    );
+    if (hr < 0 or ptr == null) return null;
+
+    const tb: *w32.ITaskbarList3 = @ptrCast(@alignCast(ptr.?));
+    _ = tb.HrInit();
+    self.taskbar = tb;
+    return tb;
+}
+
 fn registerGlobalHotkey(self: *App) void {
     const alloc = self.core_app.alloc;
     var next_id: i32 = 1;

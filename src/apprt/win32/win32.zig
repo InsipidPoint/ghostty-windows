@@ -1395,3 +1395,84 @@ pub extern "advapi32" fn RegCloseKey(hKey: HKEY) callconv(.winapi) u32;
 
 pub const WM_SETTINGCHANGE: u32 = 0x001A;
 pub const WM_SHOWWINDOW: u32 = 0x0018;
+
+// -----------------------------------------------------------------------
+// COM: ITaskbarList3 — taskbar button progress (OSC 9;4 progress reports)
+// -----------------------------------------------------------------------
+
+pub const GUID = std.os.windows.GUID;
+pub const HRESULT = std.os.windows.HRESULT;
+pub const BOOL = std.os.windows.BOOL;
+
+pub const CLSCTX_INPROC_SERVER: u32 = 0x1;
+pub const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+pub extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: u32) callconv(.winapi) HRESULT;
+pub extern "ole32" fn CoCreateInstance(
+    rclsid: *const GUID,
+    pUnkOuter: ?*anyopaque,
+    dwClsContext: u32,
+    riid: *const GUID,
+    ppv: *?*anyopaque,
+) callconv(.winapi) HRESULT;
+
+// {56FDF344-FD6D-11D0-958A-006097C9A090}
+pub const CLSID_TaskbarList: GUID = .{
+    .Data1 = 0x56FDF344,
+    .Data2 = 0xFD6D,
+    .Data3 = 0x11D0,
+    .Data4 = .{ 0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90 },
+};
+// {EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF}
+pub const IID_ITaskbarList3: GUID = .{
+    .Data1 = 0xEA1AFB91,
+    .Data2 = 0x9E28,
+    .Data3 = 0x4B86,
+    .Data4 = .{ 0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF },
+};
+
+// TBPFLAG taskbar progress states.
+pub const TBPF_NOPROGRESS: c_int = 0x0;
+pub const TBPF_INDETERMINATE: c_int = 0x1;
+pub const TBPF_NORMAL: c_int = 0x2;
+pub const TBPF_ERROR: c_int = 0x4;
+pub const TBPF_PAUSED: c_int = 0x8;
+
+/// Minimal ITaskbarList3, declared through SetProgressState (the only methods
+/// we call). The vtable layout mirrors the COM inheritance chain
+/// IUnknown -> ITaskbarList -> ITaskbarList2 -> ITaskbarList3; trailing
+/// ITaskbarList3 methods are omitted because we never call them.
+pub const ITaskbarList3 = extern struct {
+    vtable: *const Vtbl,
+
+    pub const Vtbl = extern struct {
+        // IUnknown
+        QueryInterface: *const fn (*ITaskbarList3, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT,
+        AddRef: *const fn (*ITaskbarList3) callconv(.winapi) u32,
+        Release: *const fn (*ITaskbarList3) callconv(.winapi) u32,
+        // ITaskbarList
+        HrInit: *const fn (*ITaskbarList3) callconv(.winapi) HRESULT,
+        AddTab: *const fn (*ITaskbarList3, ?HWND) callconv(.winapi) HRESULT,
+        DeleteTab: *const fn (*ITaskbarList3, ?HWND) callconv(.winapi) HRESULT,
+        ActivateTab: *const fn (*ITaskbarList3, ?HWND) callconv(.winapi) HRESULT,
+        SetActiveAlt: *const fn (*ITaskbarList3, ?HWND) callconv(.winapi) HRESULT,
+        // ITaskbarList2
+        MarkFullscreenWindow: *const fn (*ITaskbarList3, ?HWND, BOOL) callconv(.winapi) HRESULT,
+        // ITaskbarList3
+        SetProgressValue: *const fn (*ITaskbarList3, ?HWND, u64, u64) callconv(.winapi) HRESULT,
+        SetProgressState: *const fn (*ITaskbarList3, ?HWND, c_int) callconv(.winapi) HRESULT,
+    };
+
+    pub fn HrInit(self: *ITaskbarList3) HRESULT {
+        return self.vtable.HrInit(self);
+    }
+    pub fn Release(self: *ITaskbarList3) void {
+        _ = self.vtable.Release(self);
+    }
+    pub fn SetProgressState(self: *ITaskbarList3, hwnd: ?HWND, flags: c_int) void {
+        _ = self.vtable.SetProgressState(self, hwnd, flags);
+    }
+    pub fn SetProgressValue(self: *ITaskbarList3, hwnd: ?HWND, completed: u64, total: u64) void {
+        _ = self.vtable.SetProgressValue(self, hwnd, completed, total);
+    }
+};
