@@ -746,7 +746,20 @@ fn instantFromNs(ns: u64) SelectionGesture.Time {
     }
 
     return switch (builtin.os.tag) {
-        .windows, .uefi, .wasi => .{ .timestamp = ns },
+        // Windows local fix (not upstreamed): std.time.Instant.timestamp holds
+        // QueryPerformanceCounter ticks here, not nanoseconds, and
+        // Instant.since() rescales the tick delta by ns_per_s/QPF. Upstream
+        // groups Windows with uefi/wasi and stores the raw C-API nanosecond
+        // value as .timestamp, so timeSince() then multiplies it by ns_per_s/QPF
+        // and returns garbage — breaking double/triple-click repeat detection
+        // for libghostty-vt consumers on Windows. Convert ns to QPC ticks
+        // (ticks = ns * QPF / ns_per_s) so timeSince() reads back correct
+        // nanoseconds. uefi/wasi keep raw ns because their Instant.timestamp
+        // *is* nanoseconds.
+        .windows => .{ .timestamp = @intCast(
+            @as(u128, ns) * std.os.windows.QueryPerformanceFrequency() / std.time.ns_per_s,
+        ) },
+        .uefi, .wasi => .{ .timestamp = ns },
         else => .{ .timestamp = .{
             .sec = @intCast(ns / std.time.ns_per_s),
             .nsec = @intCast(ns % std.time.ns_per_s),
@@ -757,6 +770,25 @@ fn instantFromNs(ns: u64) SelectionGesture.Time {
 fn validBehavior(behavior: Behavior) bool {
     _ = std.meta.intToEnum(Behavior, @intFromEnum(behavior)) catch return false;
     return true;
+}
+
+test "instantFromNs: timeSince round-trips nanoseconds" {
+    // Skip on freestanding wasm, where Time is a raw u64 nanosecond value and
+    // there is no std.time.Instant.since to exercise.
+    if (comptime builtin.target.cpu.arch == .wasm32 and
+        builtin.target.os.tag == .freestanding) return error.SkipZigTest;
+
+    // Two C-API nanosecond timestamps 200 ms apart. Converting each through
+    // instantFromNs and measuring with Instant.since must recover ~200 ms; the
+    // Windows path additionally round-trips through QPC ticks. Guards against
+    // regressing to the upstream grouping that stores Windows timestamps as raw
+    // nanoseconds, which makes since() return a QPF-rescaled (wrong) value and
+    // breaks double/triple-click repeat detection for libghostty-vt consumers.
+    const start = instantFromNs(500_000_000);
+    const end = instantFromNs(700_000_000);
+    const elapsed_ns = end.since(start);
+    try testing.expect(elapsed_ns >= 199_000_000);
+    try testing.expect(elapsed_ns <= 201_000_000);
 }
 
 test "selection gesture lifecycle and get" {
