@@ -2048,6 +2048,21 @@ fn surfaceWndProc(
             surface.handleMouseButton(.middle, .release, lparam);
             return 0;
         },
+        w32.WM_XBUTTONDOWN => {
+            // X1 = back (button four), X2 = forward (button five). Deliver to
+            // the terminal for mouse reporting instead of the shell nav.
+            _ = w32.SetFocus(hwnd);
+            const btn: input.MouseButton =
+                if ((wparam >> 16) & 0xFFFF == w32.XBUTTON2) .five else .four;
+            surface.handleMouseButton(btn, .press, lparam);
+            return 1; // TRUE: handled; suppresses the default WM_APPCOMMAND.
+        },
+        w32.WM_XBUTTONUP => {
+            const btn: input.MouseButton =
+                if ((wparam >> 16) & 0xFFFF == w32.XBUTTON2) .five else .four;
+            surface.handleMouseButton(btn, .release, lparam);
+            return 1;
+        },
 
         w32.WM_MOUSEMOVE => {
             surface.handleMouseMove(lparam);

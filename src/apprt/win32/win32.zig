@@ -162,6 +162,11 @@ pub const WM_RBUTTONDOWN: u32 = 0x0204;
 pub const WM_RBUTTONUP: u32 = 0x0205;
 pub const WM_MBUTTONDOWN: u32 = 0x0207;
 pub const WM_MBUTTONUP: u32 = 0x0208;
+pub const WM_XBUTTONDOWN: u32 = 0x020B;
+pub const WM_XBUTTONUP: u32 = 0x020C;
+// GET_XBUTTON_WPARAM(wParam) high word values.
+pub const XBUTTON1: usize = 0x0001; // "Back"
+pub const XBUTTON2: usize = 0x0002; // "Forward"
 pub const WM_MOUSEWHEEL: u32 = 0x020A;
 pub const WM_MOUSEHWHEEL: u32 = 0x020E;
 pub const WM_SETCURSOR: u32 = 0x0020;
