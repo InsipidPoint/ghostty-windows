@@ -578,7 +578,9 @@ pub fn performAction(
                 .app => {},
                 .surface => |core_surface| {
                     // Close the entire window (all tabs), not just one tab.
-                    core_surface.rt_surface.parent_window.close();
+                    // Confirm first if any tab still has a running process.
+                    const win = core_surface.rt_surface.parent_window;
+                    if (win.confirmCloseIfNeeded()) win.close();
                 },
             }
             return true;

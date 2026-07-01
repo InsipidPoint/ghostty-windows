@@ -457,13 +457,28 @@ pub fn getCursorPos(self: *const Surface) !apprt.CursorPos {
             };
         }
     }
-    return .{ .x = 0, .y = 0 };
+    // Signal failure rather than returning a bogus {0,0} origin, so the
+    // core skips the mouse computation instead of resolving it against the
+    // top-left cell (which produced spurious hover/selection at 0,0).
+    return error.GetCursorPosFailed;
 }
 
 pub fn getTitle(self: *const Surface) ?[:0]const u8 {
     _ = self;
     // TODO: Store and return the title set via setTitle.
     return null;
+}
+
+/// Notify the core whether this surface is currently visible. When a surface
+/// is occluded (background tab, hidden split-zoom pane, minimized window) the
+/// renderer skips rebuilding/rendering frames until it is visible again
+/// (src/renderer/Thread.zig). The core mailbox dedupes redundant states, so
+/// re-asserting the same visibility (e.g. on every layout pass) is cheap.
+pub fn setVisible(self: *Surface, visible: bool) void {
+    if (!self.core_surface_ready) return;
+    self.core_surface.occlusionCallback(visible) catch |err| {
+        log.warn("occlusionCallback failed err={}", .{err});
+    };
 }
 
 pub fn close(self: *Surface, process_active: bool) void {
@@ -504,6 +519,25 @@ pub fn supportsClipboard(
         .standard => true,
         .selection, .primary => false,
     };
+}
+
+/// Show a modal clipboard confirmation dialog on the owning window and
+/// return true if the user approved. Mirrors the macOS/GTK clipboard
+/// confirmation flow so the core's paste-protection and OSC 52
+/// authorization guards actually gate the operation on Windows.
+fn confirmClipboard(
+    self: *Surface,
+    comptime message: [:0]const u8,
+    comptime title: [:0]const u8,
+) bool {
+    const result = w32.MessageBoxW(
+        self.parent_window.hwnd,
+        std.unicode.utf8ToUtf16LeStringLiteral(message),
+        std.unicode.utf8ToUtf16LeStringLiteral(title),
+        // Default to Cancel so an accidental Enter does not approve.
+        w32.MB_OKCANCEL | w32.MB_ICONWARNING | w32.MB_DEFBUTTON2,
+    );
+    return result == w32.IDOK;
 }
 
 pub fn clipboardRequest(
@@ -552,15 +586,33 @@ pub fn clipboardRequest(
     const utf8z = try alloc.dupeZ(u8, utf8);
     defer alloc.free(utf8z);
 
-    // Complete the request synchronously. confirmed=true avoids the
-    // unsafe-paste prompt (matches behaviour of other synchronous runtimes).
-    self.core_surface.completeClipboardRequest(state, utf8z, true) catch |err| switch (err) {
-        error.UnsafePaste,
-        error.UnauthorizedPaste,
-        => {
-            // Re-complete with confirmed=false so the core surface can
-            // handle the prompt; for now just log and skip.
-            log.warn("clipboard paste was flagged as unsafe/unauthorized", .{});
+    // Complete the request with confirmed=false so the core runs its
+    // safety checks. If it flags the paste as unsafe (paste-protection) or
+    // the OSC 52 read as unauthorized (clipboard-read = ask), prompt the
+    // user and only re-complete with confirmed=true on approval. Passing
+    // confirmed=true up front — as this used to — silently disabled both
+    // guards on Windows.
+    self.core_surface.completeClipboardRequest(state, utf8z, false) catch |err| switch (err) {
+        error.UnsafePaste => {
+            if (self.confirmClipboard(
+                "The text being pasted contains characters that could run " ++
+                    "commands unexpectedly (for example, newlines).\n\nPaste anyway?",
+                "Ghostty \u{2014} Potentially Unsafe Paste",
+            )) {
+                self.core_surface.completeClipboardRequest(state, utf8z, true) catch |e| {
+                    log.err("completeClipboardRequest (confirmed) error: {}", .{e});
+                };
+            }
+        },
+        error.UnauthorizedPaste => {
+            if (self.confirmClipboard(
+                "An application is requesting access to read the clipboard.\n\nAllow this?",
+                "Ghostty \u{2014} Authorize Clipboard Access",
+            )) {
+                self.core_surface.completeClipboardRequest(state, utf8z, true) catch |e| {
+                    log.err("completeClipboardRequest (confirmed) error: {}", .{e});
+                };
+            }
         },
         else => {
             log.err("completeClipboardRequest error: {}", .{err});
@@ -576,10 +628,18 @@ pub fn setClipboard(
     contents: []const apprt.ClipboardContent,
     confirm: bool,
 ) !void {
-    _ = confirm;
-
     // Only the standard clipboard is supported on Win32.
     if (clipboard_type != .standard) return;
+
+    // When the core requests confirmation (e.g. an OSC 52 clipboard write
+    // with clipboard-write = ask), prompt before writing. Previously the
+    // flag was discarded, so remote apps could write the clipboard silently.
+    if (confirm) {
+        if (!self.confirmClipboard(
+            "An application is requesting to write to the system clipboard.\n\nAllow this?",
+            "Ghostty \u{2014} Authorize Clipboard Access",
+        )) return;
+    }
 
     // Find the text/plain content.
     const text = blk: {

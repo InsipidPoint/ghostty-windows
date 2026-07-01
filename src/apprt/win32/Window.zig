@@ -515,6 +515,15 @@ pub fn closeSplitSurface(self: *Window, surface: *Surface) void {
 }
 
 /// Switch to the tab at the given index.
+/// Set the visibility (occlusion) of every surface in the active tab. Used on
+/// window minimize/restore so the renderer stops rebuilding frames while the
+/// window is minimized.
+fn setActiveTabVisible(self: *Window, visible: bool) void {
+    if (self.active_tab >= self.tab_count) return;
+    var it = self.tab_trees[self.active_tab].iterator();
+    while (it.next()) |entry| entry.view.setVisible(visible);
+}
+
 pub fn selectTabIndex(self: *Window, idx: usize) void {
     if (idx >= self.tab_count) return;
     self.cancelTabRename();
@@ -527,6 +536,7 @@ pub fn selectTabIndex(self: *Window, idx: usize) void {
     if (self.active_tab < self.tab_count) {
         var it = self.tab_trees[self.active_tab].iterator();
         while (it.next()) |entry| {
+            entry.view.setVisible(false);
             if (entry.view.hwnd) |h| _ = w32.ShowWindow(h, w32.SW_HIDE);
         }
     }
@@ -546,6 +556,7 @@ pub fn layoutSplits(self: *Window) void {
         var it = tree.iterator();
         while (it.next()) |entry| {
             if (entry.handle == zoomed_handle) {
+                entry.view.setVisible(true);
                 if (entry.view.hwnd) |h| {
                     const w = @max(rect.right - rect.left, 1);
                     const ht = @max(rect.bottom - rect.top, 1);
@@ -553,6 +564,7 @@ pub fn layoutSplits(self: *Window) void {
                     _ = w32.ShowWindow(h, w32.SW_SHOW);
                 }
             } else {
+                entry.view.setVisible(false);
                 if (entry.view.hwnd) |h| _ = w32.ShowWindow(h, w32.SW_HIDE);
             }
         }
@@ -575,6 +587,7 @@ fn layoutNode(self: *Window, tree: SplitTree(Surface), handle: SplitTree(Surface
     if (handle.idx() >= tree.nodes.len) return;
     switch (tree.nodes[handle.idx()]) {
         .leaf => |view| {
+            view.setVisible(true);
             if (view.hwnd) |h| {
                 const w = @max(rect.right - rect.left, 1);
                 const ht = @max(rect.bottom - rect.top, 1);
@@ -1609,6 +1622,41 @@ pub fn cancelTabRename(self: *Window) void {
     }
 }
 
+/// Return true if it is safe to close this whole window. If any tab still
+/// has a running process, show a single aggregate confirmation dialog
+/// (mirroring macOS/GTK, which confirm once per window) and return whether
+/// the user approved. Whole-window close paths (title-bar X, Alt+F4,
+/// close_window) previously skipped this check entirely; the per-surface
+/// close path (Ctrl+Shift+W) still confirms separately in Surface.close.
+/// When the last tab has already been closed (tab_count == 0) there is
+/// nothing to confirm, so this returns true silently.
+pub fn confirmCloseIfNeeded(self: *Window) bool {
+    var needs = false;
+    outer: for (0..self.tab_count) |i| {
+        var it = self.tab_trees[i].iterator();
+        while (it.next()) |entry| {
+            const surface = entry.view;
+            if (surface.core_surface_ready and
+                surface.core_surface.needsConfirmQuit())
+            {
+                needs = true;
+                break :outer;
+            }
+        }
+    }
+    if (!needs) return true;
+
+    const result = w32.MessageBoxW(
+        self.hwnd,
+        std.unicode.utf8ToUtf16LeStringLiteral(
+            "Processes are still running in this window.\nClose anyway?",
+        ),
+        std.unicode.utf8ToUtf16LeStringLiteral("Ghostty"),
+        w32.MB_OKCANCEL | w32.MB_ICONWARNING | w32.MB_DEFBUTTON2,
+    );
+    return result == w32.IDOK;
+}
+
 /// Handle WM_CLOSE: clean up all tabs, then destroy the window.
 /// OpenGL contexts and DCs must be released BEFORE DestroyWindow,
 /// because Win32 destroys child HWNDs during DestroyWindow and the
@@ -1732,6 +1780,14 @@ pub fn windowWndProc(
             return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         w32.WM_SIZE => {
+            // Minimizing does not hide child surface HWNDs, so tell the core
+            // to stop rendering the active tab while minimized, and resume on
+            // restore/maximize.
+            switch (wparam) {
+                w32.SIZE_MINIMIZED => window.setActiveTabVisible(false),
+                w32.SIZE_RESTORED, w32.SIZE_MAXIMIZED => window.setActiveTabVisible(true),
+                else => {},
+            }
             window.handleResize();
             return 0;
         },
@@ -1780,6 +1836,9 @@ pub fn windowWndProc(
             return 0;
         },
         w32.WM_CLOSE => {
+            // Title-bar X / Alt+F4 / close_all_windows land here. Confirm
+            // once for the whole window if any tab has a running process.
+            if (!window.confirmCloseIfNeeded()) return 0;
             window.close();
             return 0;
         },
