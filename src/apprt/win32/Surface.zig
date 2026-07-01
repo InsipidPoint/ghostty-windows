@@ -1720,6 +1720,9 @@ pub fn handleKeyEvent(self: *Surface, wparam: usize, lparam: isize, action: inpu
     var utf8_buf: [16]u8 = undefined;
     var utf8_text: []const u8 = "";
     var consumed_mods: input.Mods = .{};
+    // The modifier set actually encoded into the key event. AltGr handling
+    // below may clear ctrl+alt on this copy without disturbing `mods`.
+    var event_mods = mods;
 
     // Reset the flag — WM_CHAR should be allowed through unless
     // ToUnicode produces text below.
@@ -1757,6 +1760,22 @@ pub fn handleKeyEvent(self: *Surface, wparam: usize, lparam: isize, action: inpu
                         utf8_text = utf8_buf[0..len];
                         if (mods.shift) consumed_mods.shift = true;
                         self.key_event_produced_text = true;
+                        // AltGr layouts: Windows reports AltGr as
+                        // Left-Ctrl+Right-Alt. When that combination itself
+                        // produced printable text (e.g. German AltGr+Q '@',
+                        // AltGr+8 '['), strip ctrl+alt from the ENCODED mods.
+                        // The core key encoder reads raw event.mods and would
+                        // otherwise turn the literal into a C0/CSIu control
+                        // sequence. Gate on the right-Alt physically being down
+                        // so genuine Ctrl+Alt chords are left untouched.
+                        if (mods.ctrl and mods.alt and
+                            (keyboard_state[w32.VK_RMENU] & 0x80) != 0)
+                        {
+                            event_mods.ctrl = false;
+                            event_mods.alt = false;
+                            consumed_mods.ctrl = true;
+                            consumed_mods.alt = true;
+                        }
                     }
                 }
             }
@@ -1766,7 +1785,7 @@ pub fn handleKeyEvent(self: *Surface, wparam: usize, lparam: isize, action: inpu
     const event = input.KeyEvent{
         .action = actual_action,
         .key = key,
-        .mods = mods,
+        .mods = event_mods,
         .consumed_mods = consumed_mods,
         .utf8 = utf8_text,
         .unshifted_codepoint = unshifted_codepoint,

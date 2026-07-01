@@ -122,21 +122,62 @@ pub const InitOptions = struct {
     force_opaque: bool = false,
 };
 
-/// Apply DWM dark/light + caption color based on the configured
-/// background. Light vs dark is decided by luminance; CAPTION_COLOR
-/// is silently ignored on Windows 10.
-fn applyChromeTheme(hwnd: w32.HWND, bg: anytype) void {
+/// Read HKCU\...\Themes\Personalize\AppsUseLightTheme. Returns true when the
+/// system apps theme is light. A missing/erroring value is treated as light,
+/// which is how the Personalize key reads before it is ever written.
+fn systemUsesLightTheme() bool {
+    const subkey = std.unicode.utf8ToUtf16LeStringLiteral(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+    );
+    const valname = std.unicode.utf8ToUtf16LeStringLiteral("AppsUseLightTheme");
+    var hkey: w32.HKEY = undefined;
+    if (w32.RegOpenKeyExW(w32.HKEY_CURRENT_USER, subkey, 0, w32.KEY_READ, &hkey) !=
+        w32.ERROR_SUCCESS) return true;
+    defer _ = w32.RegCloseKey(hkey);
+    var kind: u32 = 0;
+    var val: u32 = 0;
+    var cb: u32 = @sizeOf(u32);
+    if (w32.RegQueryValueExW(hkey, valname, null, &kind, @ptrCast(&val), &cb) !=
+        w32.ERROR_SUCCESS) return true;
+    if (kind != w32.REG_DWORD) return true;
+    return val != 0; // 0 = dark, nonzero = light
+}
+
+/// Apply the DWM dark/light title bar, honoring `window-theme`: dark/light
+/// force the mode, `system` reads the OS apps theme, and `auto`/`ghostty`
+/// fall back to the terminal background luminance. The caption is tinted to
+/// the terminal background only for the luminance-derived themes; for the
+/// explicit dark/light/system themes the caption is reset to the system
+/// default so the standard themed title bar (and legible glyphs) is drawn.
+fn applyChromeTheme(hwnd: w32.HWND, theme: anytype, bg: anytype) void {
     const luminance: f32 = (0.2126 * @as(f32, @floatFromInt(bg.r)) +
         0.7152 * @as(f32, @floatFromInt(bg.g)) +
         0.0722 * @as(f32, @floatFromInt(bg.b))) / 255.0;
-    const dark_mode: u32 = if (luminance < 0.5) 1 else 0;
+    const by_luminance = luminance < 0.5;
+    const dark = switch (theme) {
+        .dark => true,
+        .light => false,
+        .system => !systemUsesLightTheme(),
+        // `ghostty` is a Linux/GTK-only theme; treat it as auto on Windows.
+        .auto, .ghostty => by_luminance,
+    };
+
+    const dark_mode: u32 = if (dark) 1 else 0;
     _ = w32.DwmSetWindowAttribute(
         hwnd,
         w32.DWMWA_USE_IMMERSIVE_DARK_MODE,
         @ptrCast(&dark_mode),
         @sizeOf(u32),
     );
-    const caption_color: u32 = (@as(u32, bg.r)) | (@as(u32, bg.g) << 8) | (@as(u32, bg.b) << 16);
+
+    const tint_caption = switch (theme) {
+        .auto, .ghostty => true,
+        else => false,
+    };
+    const caption_color: u32 = if (tint_caption)
+        (@as(u32, bg.r)) | (@as(u32, bg.g) << 8) | (@as(u32, bg.b) << 16)
+    else
+        w32.DWMWA_COLOR_DEFAULT;
     _ = w32.DwmSetWindowAttribute(
         hwnd,
         w32.DWMWA_CAPTION_COLOR,
@@ -149,7 +190,7 @@ fn applyChromeTheme(hwnd: w32.HWND, bg: anytype) void {
 /// reloads (background color in particular).
 pub fn onConfigChange(self: *Window) void {
     if (self.hwnd) |hwnd| {
-        applyChromeTheme(hwnd, self.app.config.background);
+        applyChromeTheme(hwnd, self.app.config.@"window-theme", self.app.config.background);
     }
 }
 
@@ -214,7 +255,7 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
     // Store the Window pointer in GWLP_USERDATA for the WndProc.
     _ = w32.SetWindowLongPtrW(hwnd, w32.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 
-    applyChromeTheme(hwnd, app.config.background);
+    applyChromeTheme(hwnd, app.config.@"window-theme", app.config.background);
 
     // Apply dark theme to common controls (scrollbar, etc.).
     _ = w32.SetWindowTheme(

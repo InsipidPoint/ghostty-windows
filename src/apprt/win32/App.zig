@@ -20,6 +20,10 @@ const w32 = @import("win32.zig");
 const build_config = @import("../../build_config.zig");
 const input = @import("../../input.zig");
 
+/// A registered global system hotkey: the RegisterHotKey id and the binding
+/// action to perform when WM_HOTKEY delivers that id.
+const GlobalHotkey = struct { id: i32, action: input.Binding.Action };
+
 const log = std.log.scoped(.win32);
 
 /// OpenGL draws happen on the renderer thread, not the app thread.
@@ -80,8 +84,10 @@ quit_requested: bool = false,
 /// The quick terminal instance (if active).
 quick_terminal: ?*QuickTerminal = null,
 
-/// Whether a global hotkey has been registered.
-global_hotkey_registered: bool = false,
+/// Registered global system hotkeys (RegisterHotKey). Maps the id delivered in
+/// WM_HOTKEY back to the binding action to perform. Generalized from the old
+/// single quick-terminal hotkey to every keybind flagged `global:`.
+global_hotkeys: std.ArrayList(GlobalHotkey) = .empty,
 
 pub fn init(
     self: *App,
@@ -246,13 +252,17 @@ pub fn run(self: *App) !void {
         if (result < 0) return error.Win32Error;
         if (self.quit_requested) break;
 
-        // Handle global hotkey for quick terminal.
+        // Dispatch a global hotkey to its bound action.
         if (msg.message == w32.WM_HOTKEY) {
-            _ = self.performAction(
-                .{ .app = {} },
-                .toggle_quick_terminal,
-                {},
-            ) catch {};
+            const id: i32 = @intCast(msg.wParam);
+            for (self.global_hotkeys.items) |hk| {
+                if (hk.id != id) continue;
+                // apprt.App is this win32 App, so `self` is the rt_app.
+                self.core_app.performAllAction(self, hk.action) catch |err| {
+                    log.warn("global hotkey action failed err={}", .{err});
+                };
+                break;
+            }
             continue;
         }
 
@@ -355,11 +365,9 @@ pub fn run(self: *App) !void {
 pub fn terminate(self: *App) void {
     self.stopQuitTimer();
 
-    // Unregister global hotkey.
-    if (self.global_hotkey_registered) {
-        _ = w32.UnregisterHotKey(null, 1);
-        self.global_hotkey_registered = false;
-    }
+    // Unregister all global hotkeys.
+    for (self.global_hotkeys.items) |hk| _ = w32.UnregisterHotKey(null, hk.id);
+    self.global_hotkeys.deinit(self.core_app.alloc);
 
     // Destroy quick terminal if active.
     if (self.quick_terminal) |qt| {
@@ -1271,21 +1279,16 @@ fn isEditShortcutVk(vk: u16) bool {
 /// Register a system-wide hotkey for toggle_quick_terminal.
 /// Scans keybinds for entries with the `global` flag.
 fn registerGlobalHotkey(self: *App) void {
+    const alloc = self.core_app.alloc;
+    var next_id: i32 = 1;
     var it = self.config.keybind.set.bindings.iterator();
     while (it.next()) |entry| {
         const leaf = switch (entry.value_ptr.*) {
-            .leader => continue,
             .leaf => |l| l,
-            .leaf_chained => continue,
+            // Leader and chained bindings are not registered as global hotkeys.
+            .leader, .leaf_chained => continue,
         };
         if (!leaf.flags.global) continue;
-
-        // Check if this binding is for toggle_quick_terminal.
-        const is_quick_terminal = switch (leaf.action) {
-            .toggle_quick_terminal => true,
-            else => false,
-        };
-        if (!is_quick_terminal) continue;
 
         const trigger = entry.key_ptr.*;
 
@@ -1308,17 +1311,22 @@ fn registerGlobalHotkey(self: *App) void {
             else => null,
         };
 
-        if (vk) |vk_code| {
-            if (w32.RegisterHotKey(null, 1, mods, vk_code) != 0) {
-                self.global_hotkey_registered = true;
-                log.info("registered global hotkey for quick terminal", .{});
-            } else {
-                log.warn("failed to register global hotkey (may be in use by another app)", .{});
-            }
-        } else {
-            log.warn("unsupported key for global hotkey", .{});
+        const vk_code = vk orelse {
+            log.warn("unsupported key for global hotkey action={s}", .{@tagName(leaf.action)});
+            continue;
+        };
+
+        const id = next_id;
+        if (w32.RegisterHotKey(null, id, mods, vk_code) == 0) {
+            log.warn("failed to register global hotkey (may be in use) action={s}", .{@tagName(leaf.action)});
+            continue;
         }
-        break; // Only register the first matching binding.
+        self.global_hotkeys.append(alloc, .{ .id = id, .action = leaf.action }) catch {
+            _ = w32.UnregisterHotKey(null, id);
+            continue;
+        };
+        next_id += 1;
+        log.info("registered global hotkey id={} action={s}", .{ id, @tagName(leaf.action) });
     }
 }
 

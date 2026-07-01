@@ -1016,6 +1016,8 @@ pub extern "imm32" fn ImmSetCompositionWindow(
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
 /// Title-bar fill color (Windows 11 22H2+). COLORREF 0x00BBGGRR.
 pub const DWMWA_CAPTION_COLOR: u32 = 35;
+// Sentinel for DWMWA_CAPTION_COLOR/TEXT_COLOR meaning "use the system default".
+pub const DWMWA_COLOR_DEFAULT: u32 = 0xFFFFFFFF;
 /// Title-bar text color (Windows 11 22H2+). COLORREF 0x00BBGGRR.
 pub const DWMWA_TEXT_COLOR: u32 = 36;
 /// Border color (Windows 11+). COLORREF 0x00BBGGRR.
