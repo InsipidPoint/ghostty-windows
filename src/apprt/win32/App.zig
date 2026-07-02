@@ -357,6 +357,14 @@ pub fn run(self: *App) !void {
         // controls (search, palette, tab rename) still need it.
         const skip_translate = switch (msg.message) {
             w32.WM_KEYDOWN, w32.WM_KEYUP, w32.WM_SYSKEYDOWN, w32.WM_SYSKEYUP => blk: {
+                // Keys claimed by the IME arrive as VK_PROCESSKEY and MUST
+                // go through TranslateMessage: that is what forwards them to
+                // the IME (ImmTranslateMessage) to generate the
+                // WM_IME_STARTCOMPOSITION/WM_IME_COMPOSITION messages and
+                // drive the candidate window. Skipping it made CJK input
+                // dead. This does not disturb the ToUnicode dead-key state:
+                // handleKeyEvent never calls ToUnicode for VK_PROCESSKEY.
+                if (msg.wParam == w32.VK_PROCESSKEY) break :blk false;
                 const h = msg.hwnd orelse break :blk false;
                 const atom: u16 = @truncate(w32.GetClassLongW(h, w32.GCW_ATOM));
                 break :blk atom != 0 and atom == self.terminal_class_atom;
