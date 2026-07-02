@@ -179,6 +179,9 @@ pub const HTCLIENT: u16 = 1;
 pub const WM_IME_STARTCOMPOSITION: u32 = 0x010D;
 pub const WM_IME_ENDCOMPOSITION: u32 = 0x010E;
 pub const WM_IME_COMPOSITION: u32 = 0x010F;
+pub const WM_IME_SETCONTEXT: u32 = 0x0281;
+// WM_IME_SETCONTEXT lparam bit: show the default composition window.
+pub const ISC_SHOWUICOMPOSITIONWINDOW: isize = 0x80000000;
 
 // IME composition string flags
 pub const GCS_COMPSTR: u32 = 0x0008;
@@ -782,6 +785,7 @@ pub const WM_COMMAND: u32 = 0x0111;
 pub const WM_CTLCOLOREDIT: u32 = 0x0133;
 pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
 // STATIC control styles.
+pub const SS_CENTER: u32 = 0x0001;
 pub const SS_RIGHT: u32 = 0x0002;
 pub const SS_CENTERIMAGE: u32 = 0x0200;
 
@@ -1404,6 +1408,33 @@ pub extern "advapi32" fn RegCloseKey(hKey: HKEY) callconv(.winapi) u32;
 
 pub const WM_SETTINGCHANGE: u32 = 0x001A;
 pub const WM_SHOWWINDOW: u32 = 0x0018;
+
+// -----------------------------------------------------------------------
+// SetWindowCompositionAttribute — accent blur-behind for background-blur.
+// Undocumented but stable since Windows 10 (used by Windows Terminal et al).
+// -----------------------------------------------------------------------
+
+pub const ACCENT_DISABLED: i32 = 0;
+pub const ACCENT_ENABLE_BLURBEHIND: i32 = 3;
+pub const WCA_ACCENT_POLICY: u32 = 19;
+
+pub const ACCENT_POLICY = extern struct {
+    AccentState: i32,
+    AccentFlags: u32,
+    GradientColor: u32,
+    AnimationId: u32,
+};
+
+pub const WINDOWCOMPOSITIONATTRIBDATA = extern struct {
+    Attrib: u32,
+    pvData: *anyopaque,
+    cbData: usize,
+};
+
+pub extern "user32" fn SetWindowCompositionAttribute(
+    hwnd: HWND,
+    data: *WINDOWCOMPOSITIONATTRIBDATA,
+) callconv(.winapi) i32;
 
 // -----------------------------------------------------------------------
 // COM: ITaskbarList3 — taskbar button progress (OSC 9;4 progress reports)

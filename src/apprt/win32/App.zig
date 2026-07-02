@@ -688,9 +688,14 @@ pub fn performAction(
         },
 
         .mouse_over_link => {
-            // Acknowledge the action. The cursor shape change is handled
-            // separately by mouse_shape → IDC_HAND. We could show the
-            // URL in a status bar or tooltip here in the future.
+            // Show the hovered URL in a small status bubble at the bottom
+            // of the surface (cursor shape is handled by mouse_shape).
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    core_surface.rt_surface.setMouseOverLink(value.url);
+                },
+            }
             return true;
         },
 
@@ -1009,7 +1014,6 @@ pub fn performAction(
 
         // Acknowledge actions that don't need Win32-specific handling.
         // The core handles the logic; we just confirm receipt.
-        .renderer_health,
         .key_sequence,
         .key_table,
         .pwd,
@@ -1024,6 +1028,22 @@ pub fn performAction(
         .inspector, // Not yet implemented (debug overlay)
         .render_inspector, // Not yet implemented (debug overlay)
         => return true,
+
+        .renderer_health => {
+            // Surface a warning when the GPU renderer degrades so a frozen
+            // display is explainable (macOS shows an in-window message).
+            switch (value) {
+                .healthy => {},
+                .unhealthy => {
+                    self.notif_desktop_surface_id = 0;
+                    self.showDesktopNotificationText(
+                        "Renderer Unhealthy",
+                        "The GPU renderer is in an unhealthy state; terminal output may stop updating.",
+                    );
+                },
+            }
+            return true;
+        },
 
         .progress_report => {
             // Reflect shell/TUI progress (OSC 9;4) on the taskbar button, the
@@ -2056,21 +2076,28 @@ fn surfaceWndProc(
             return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
+        w32.WM_IME_SETCONTEXT => {
+            // The composition (preedit) is rendered inline in the terminal
+            // by the core, so tell the system not to show the default
+            // floating composition window. The IME candidate list is
+            // unaffected and still anchors to ImmSetCompositionWindow.
+            const cleared = lparam & ~w32.ISC_SHOWUICOMPOSITIONWINDOW;
+            return w32.DefWindowProcW(hwnd, msg, wparam, cleared);
+        },
+
         w32.WM_IME_STARTCOMPOSITION => {
             surface.handleImeStartComposition();
-            // Let DefWindowProc show the default composition window.
-            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+            // Consume: we draw the composition inline; no default window.
+            return 0;
         },
 
         w32.WM_IME_COMPOSITION => {
-            if (surface.handleImeComposition(lparam)) {
-                // We extracted the result string — suppress further
-                // processing so WM_IME_CHAR/WM_CHAR are not generated.
-                return 0;
-            }
-            // No result string yet (intermediate composition) — let
-            // DefWindowProc update the default composition window.
-            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+            // Handles both intermediate preedit (GCS_COMPSTR, mirrored
+            // inline) and the final result string (GCS_RESULTSTR, committed
+            // to the terminal). Always consume so DefWindowProc doesn't
+            // generate WM_IME_CHAR or draw a default composition window.
+            _ = surface.handleImeComposition(lparam);
+            return 0;
         },
 
         w32.WM_IME_ENDCOMPOSITION => {

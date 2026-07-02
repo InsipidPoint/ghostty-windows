@@ -120,6 +120,13 @@ search_font: ?*anyopaque = null,
 /// "selected/total" match count (search_total / search_selected actions).
 search_count_label: ?w32.HWND = null,
 
+/// Small popup at the bottom-left of the surface showing the hovered URL
+/// (mouse_over_link action), like a browser status bubble.
+link_preview_hwnd: ?w32.HWND = null,
+
+/// Font for the link preview popup (deleted on cleanup).
+link_font: ?*anyopaque = null,
+
 /// Last reported search match count and selected index (0-based), from
 /// the search_total / search_selected apprt actions.
 search_total: ?usize = null,
@@ -145,7 +152,7 @@ palette_selected: u16 = 0,
 /// Number of items currently in the filtered list.
 palette_count: u16 = 0,
 /// Indices into palette_entries for the current filter.
-palette_filtered: [palette_entries.len]u16 = undefined,
+palette_filtered: [palette_entries.len + MAX_USER_PALETTE_ENTRIES]u16 = undefined,
 
 /// Reference count for SplitTree ownership. Starts at 0 because
 /// SplitTree.init() calls ref() to take initial ownership.
@@ -354,6 +361,14 @@ pub fn deinit(self: *Surface) void {
     if (self.search_font) |f| {
         _ = w32.DeleteObject(f);
         self.search_font = null;
+    }
+    if (self.link_preview_hwnd) |h| {
+        _ = w32.DestroyWindow(h);
+        self.link_preview_hwnd = null;
+    }
+    if (self.link_font) |f| {
+        _ = w32.DeleteObject(f);
+        self.link_font = null;
     }
     if (self.palette_hwnd) |popup| {
         _ = w32.DestroyWindow(popup);
@@ -765,6 +780,78 @@ pub fn handleSetCursor(self: *Surface) bool {
 pub const SEARCH_EDIT_ID: u16 = 100;
 
 /// Show or hide the search bar.
+/// Show (or clear, when url is empty) the hovered-URL preview at the
+/// bottom-left of the surface, like a browser status bubble. Driven by the
+/// mouse_over_link action.
+pub fn setMouseOverLink(self: *Surface, url: []const u8) void {
+    if (url.len == 0) {
+        if (self.link_preview_hwnd) |h| _ = w32.ShowWindow(h, w32.SW_HIDE);
+        return;
+    }
+    const hwnd = self.hwnd orelse return;
+    const s = self.scale;
+
+    if (self.link_preview_hwnd == null) {
+        self.link_preview_hwnd = w32.CreateWindowExW(
+            w32.WS_EX_TOOLWINDOW | w32.WS_EX_NOACTIVATE,
+            std.unicode.utf8ToUtf16LeStringLiteral("STATIC"),
+            std.unicode.utf8ToUtf16LeStringLiteral(""),
+            w32.WS_POPUP | w32.WS_BORDER | w32.SS_CENTERIMAGE,
+            0,
+            0,
+            10,
+            10,
+            self.parent_window.hwnd.?,
+            null,
+            self.app.hinstance,
+            null,
+        );
+        if (self.link_preview_hwnd) |h| {
+            if (self.link_font == null) {
+                self.link_font = w32.CreateFontW(
+                    -@as(i32, @intFromFloat(@round(13.0 * s))),
+                    0,
+                    0,
+                    0,
+                    400,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI"),
+                );
+            }
+            if (self.link_font) |f| {
+                _ = w32.SendMessageW(h, w32.WM_SETFONT, @intFromPtr(f), 1);
+            }
+        }
+    }
+    const preview = self.link_preview_hwnd orelse return;
+
+    var buf16: [512]u16 = undefined;
+    const truncated = if (url.len > 480) url[0..480] else url;
+    const len16 = std.unicode.utf8ToUtf16Le(&buf16, truncated) catch return;
+    buf16[@min(len16, buf16.len - 1)] = 0;
+    _ = w32.SetWindowTextW(preview, @ptrCast(&buf16));
+
+    // Rough width from character count, capped to the surface width.
+    const char_w: i32 = @intFromFloat(@round(7.0 * s));
+    const pad: i32 = @intFromFloat(@round(12.0 * s));
+    const pw: i32 = @min(
+        @as(i32, @intCast(self.width)),
+        @as(i32, @intCast(len16)) * char_w + pad,
+    );
+    const ph: i32 = @intFromFloat(@round(22.0 * s));
+    var pt = w32.POINT{ .x = 0, .y = @as(i32, @intCast(self.height)) - ph };
+    _ = w32.ClientToScreen(hwnd, &pt);
+    _ = w32.SetWindowPos(preview, null, pt.x, pt.y, pw, ph, w32.SWP_NOACTIVATE | w32.SWP_NOZORDER);
+    _ = w32.ShowWindow(preview, w32.SW_SHOWNOACTIVATE);
+}
+
 /// Store the total match count from the search_total action and refresh
 /// the "selected/total" label in the search bar.
 pub fn setSearchTotal(self: *Surface, total: ?usize) void {
@@ -1038,6 +1125,28 @@ const PaletteEntry = struct {
     action: input.Binding.Action,
 };
 
+/// Cap on user-configured command-palette-entry commands shown in the
+/// palette (bounds the fixed-size palette_filtered index array).
+pub const MAX_USER_PALETTE_ENTRIES = 64;
+
+/// Palette indexes >= palette_entries.len refer to user-configured
+/// command-palette-entry commands from the config, in order.
+fn paletteEntryName(self: *const Surface, idx: u16) []const u8 {
+    if (idx < palette_entries.len) return palette_entries[idx].name;
+    const user = self.app.config.@"command-palette-entry".value.items;
+    const uidx = idx - palette_entries.len;
+    if (uidx >= user.len) return "";
+    return user[uidx].title;
+}
+
+fn paletteEntryAction(self: *const Surface, idx: u16) ?input.Binding.Action {
+    if (idx < palette_entries.len) return palette_entries[idx].action;
+    const user = self.app.config.@"command-palette-entry".value.items;
+    const uidx = idx - palette_entries.len;
+    if (uidx >= user.len) return null;
+    return user[uidx].action;
+}
+
 /// Child window ID for the palette edit control.
 pub const PALETTE_EDIT_ID: u16 = 200;
 
@@ -1243,6 +1352,16 @@ fn filterPaletteEntries(self: *Surface, filter: []const u8) void {
             count += 1;
         }
     }
+    // User-configured command-palette-entry commands, appended after the
+    // built-in entries.
+    const user = self.app.config.@"command-palette-entry".value.items;
+    const user_len = @min(user.len, MAX_USER_PALETTE_ENTRIES);
+    for (user[0..user_len], 0..) |entry, i| {
+        if (filter.len == 0 or std.ascii.indexOfIgnoreCase(entry.title, filter) != null) {
+            self.palette_filtered[count] = @intCast(palette_entries.len + i);
+            count += 1;
+        }
+    }
     self.palette_count = count;
     self.palette_selected = 0;
     // Trigger repaint of the list area
@@ -1303,13 +1422,13 @@ pub fn executePaletteSelection(self: *Surface) void {
     if (self.palette_selected >= self.palette_count) return;
 
     const entry_idx = self.palette_filtered[self.palette_selected];
-    const entry = palette_entries[entry_idx];
+    const action = self.paletteEntryAction(entry_idx) orelse return;
 
     // Close the palette first
     self.setCommandPaletteActive(false);
 
     // Execute the action
-    _ = self.core_surface.performBindingAction(entry.action) catch |err| {
+    _ = self.core_surface.performBindingAction(action) catch |err| {
         log.err("palette action error: {}", .{err});
     };
 }
@@ -1379,7 +1498,8 @@ pub fn paintPalette(self: *Surface, hwnd: w32.HWND) void {
 
         const y = list_top + visual_idx * item_height;
         const entry_idx = self.palette_filtered[i];
-        const entry = palette_entries[entry_idx];
+        const entry_name = self.paletteEntryName(entry_idx);
+        const entry_action = self.paletteEntryAction(entry_idx);
 
         // Draw selection highlight
         if (i == self.palette_selected) {
@@ -1407,11 +1527,11 @@ pub fn paintPalette(self: *Surface, hwnd: w32.HWND) void {
             .bottom = y + item_height,
         };
         var wname_buf: [128]u16 = undefined;
-        const wname_len = std.unicode.utf8ToUtf16Le(&wname_buf, entry.name) catch 0;
+        const wname_len = std.unicode.utf8ToUtf16Le(&wname_buf, entry_name) catch 0;
         _ = w32.DrawTextW(hdc, @ptrCast(&wname_buf), @intCast(wname_len), &name_rect, 0);
 
         // Draw keybinding hint on the right
-        const trigger = self.app.config.keybind.set.getTrigger(entry.action);
+        const trigger = if (entry_action) |a| self.app.config.keybind.set.getTrigger(a) else null;
         if (trigger) |t| {
             _ = w32.SetTextColor(hdc, w32.RGB(140, 140, 140));
             var kb_buf: [64]u8 = undefined;
@@ -2139,6 +2259,10 @@ pub fn handleImeStartComposition(self: *Surface) void {
 /// Handle WM_IME_ENDCOMPOSITION — the IME composition session has ended.
 pub fn handleImeEndComposition(self: *Surface) void {
     self.ime_composing = false;
+    // Clear any leftover inline preedit (e.g. composition cancelled with Esc).
+    if (self.core_surface_ready) {
+        self.core_surface.preeditCallback(null) catch {};
+    }
 }
 
 /// Handle WM_IME_COMPOSITION — intermediate or final text from the IME.
@@ -2148,7 +2272,20 @@ pub fn handleImeComposition(self: *Surface, lparam: isize) bool {
     if (!self.core_surface_ready) return false;
 
     const flags: u32 = @intCast(lparam & 0xFFFFFFFF);
-    if (flags & w32.GCS_RESULTSTR == 0) return false;
+
+    // Intermediate composition text: mirror it inline at the cursor via the
+    // core's preedit (underlined, like macOS/GTK) instead of the default
+    // floating composition window (suppressed via WM_IME_SETCONTEXT).
+    if (flags & w32.GCS_RESULTSTR == 0) {
+        if (flags & w32.GCS_COMPSTR != 0) {
+            self.updateImePreedit();
+            return true;
+        }
+        return false;
+    }
+
+    // Result string: clear the inline preedit, then commit the text below.
+    self.core_surface.preeditCallback(null) catch {};
 
     const hwnd = self.hwnd orelse return false;
     const himc = w32.ImmGetContext(hwnd) orelse return false;
@@ -2190,6 +2327,38 @@ pub fn handleImeComposition(self: *Surface, lparam: isize) bool {
 }
 
 /// Convert a UTF-16 IME result to UTF-8 and send it to the terminal.
+/// Read the current GCS_COMPSTR composition string and mirror it into the
+/// core's preedit so it renders inline at the cursor. An empty composition
+/// clears the preedit.
+fn updateImePreedit(self: *Surface) void {
+    const hwnd = self.hwnd orelse return;
+    const himc = w32.ImmGetContext(hwnd) orelse return;
+    defer _ = w32.ImmReleaseContext(hwnd, himc);
+
+    var buf16: [128]u16 = undefined;
+    const byte_len = w32.ImmGetCompositionStringW(himc, w32.GCS_COMPSTR, null, 0);
+    if (byte_len <= 0 or byte_len & 1 != 0) {
+        self.core_surface.preeditCallback(null) catch {};
+        return;
+    }
+    const u16_len: usize = @intCast(@divTrunc(byte_len, 2));
+    if (u16_len > buf16.len) {
+        // Absurdly long composition; clear rather than truncate mid-pair.
+        self.core_surface.preeditCallback(null) catch {};
+        return;
+    }
+    const got = w32.ImmGetCompositionStringW(himc, w32.GCS_COMPSTR, &buf16, @intCast(byte_len));
+    if (got <= 0 or got & 1 != 0) return;
+    const n: usize = @intCast(@divTrunc(got, 2));
+
+    // Worst case 3 bytes of UTF-8 per UTF-16 code unit.
+    var buf8: [buf16.len * 3]u8 = undefined;
+    const len8 = std.unicode.utf16LeToUtf8(&buf8, buf16[0..n]) catch return;
+    self.core_surface.preeditCallback(if (len8 == 0) null else buf8[0..len8]) catch |err| {
+        log.warn("preeditCallback failed err={}", .{err});
+    };
+}
+
 fn sendImeText(self: *Surface, utf16: []const u16) void {
     // In Win32 Input Mode, send each character as a Win32 input event
     // so ConPTY can reconstruct the full Unicode codepoints.

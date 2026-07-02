@@ -114,6 +114,14 @@ min_track_h: i32 = 0,
 max_track_w: i32 = 0,
 max_track_h: i32 = 0,
 
+/// Transient "columns × rows" overlay shown while resizing
+/// (resize-overlay config). Owned popup: destroyed with the window.
+resize_overlay_hwnd: ?w32.HWND = null,
+
+/// True once the initial WM_SIZE has been seen; resize-overlay =
+/// after-first suppresses the overlay for that first layout pass.
+resize_seen_first: bool = false,
+
 pub const InitOptions = struct {
     is_quick_terminal: bool = false,
     /// If true, start fully opaque regardless of `background-opacity`. Set
@@ -188,9 +196,28 @@ fn applyChromeTheme(hwnd: w32.HWND, theme: anytype, bg: anytype) void {
 
 /// Called from App.config_change so the title bar tracks live config
 /// reloads (background color in particular).
+/// Enable/disable the DWM accent blur behind the window (background-blur).
+/// Visible where the window is translucent (background-opacity < 1): the
+/// desktop behind shows blurred instead of sharp, the acrylic-ish look.
+fn applyBackgroundBlur(hwnd: w32.HWND, enabled: bool) void {
+    var policy: w32.ACCENT_POLICY = .{
+        .AccentState = if (enabled) w32.ACCENT_ENABLE_BLURBEHIND else w32.ACCENT_DISABLED,
+        .AccentFlags = 0,
+        .GradientColor = 0,
+        .AnimationId = 0,
+    };
+    var data: w32.WINDOWCOMPOSITIONATTRIBDATA = .{
+        .Attrib = w32.WCA_ACCENT_POLICY,
+        .pvData = @ptrCast(&policy),
+        .cbData = @sizeOf(w32.ACCENT_POLICY),
+    };
+    _ = w32.SetWindowCompositionAttribute(hwnd, &data);
+}
+
 pub fn onConfigChange(self: *Window) void {
     if (self.hwnd) |hwnd| {
         applyChromeTheme(hwnd, self.app.config.@"window-theme", self.app.config.background);
+        applyBackgroundBlur(hwnd, self.app.config.@"background-blur".enabled());
     }
 }
 
@@ -287,6 +314,9 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
         _ = w32.SetWindowLongW(hwnd, w32.GWL_EXSTYLE, current_ex | w32.WS_EX_LAYERED);
         const alpha: u8 = @intFromFloat(@round(app.config.@"background-opacity" * 255.0));
         _ = w32.SetLayeredWindowAttributes(hwnd, 0, alpha, w32.LWA_ALPHA);
+    }
+    if (app.config.@"background-blur".enabled()) {
+        applyBackgroundBlur(hwnd, true);
     }
 
     // Query DPI scale.
@@ -1318,9 +1348,97 @@ pub fn toggleWindowDecorations(self: *Window) void {
 }
 
 /// Handle WM_SIZE: re-layout the active tab's split panes and repaint tab bar.
+/// Timer id used to auto-hide the resize overlay.
+const RESIZE_OVERLAY_TIMER_ID: usize = 0x5247; // 'RG'
+
 fn handleResize(self: *Window) void {
     self.layoutSplits();
     self.invalidateTabBar();
+    self.showResizeOverlay();
+}
+
+/// Show the transient "columns × rows" overlay during a resize, honoring
+/// the resize-overlay / -position / -duration config. Auto-hides via a
+/// timer that each subsequent resize re-arms.
+fn showResizeOverlay(self: *Window) void {
+    switch (self.app.config.@"resize-overlay") {
+        .never => return,
+        .@"after-first" => if (!self.resize_seen_first) {
+            // Suppress for the initial layout pass at window creation.
+            self.resize_seen_first = true;
+            return;
+        },
+        .always => {},
+    }
+    self.resize_seen_first = true;
+    const hwnd = self.hwnd orelse return;
+
+    // Grid dimensions from the active surface.
+    const surface = self.getActiveSurface() orelse return;
+    if (!surface.core_surface_ready) return;
+    const grid = surface.core_surface.size.grid();
+
+    var buf8: [32]u8 = undefined;
+    const text8 = std.fmt.bufPrint(&buf8, "{d} \u{00D7} {d}", .{
+        grid.columns,
+        grid.rows,
+    }) catch return;
+    var buf16: [32]u16 = undefined;
+    const len16 = std.unicode.utf8ToUtf16Le(&buf16, text8) catch return;
+    buf16[len16] = 0;
+
+    if (self.resize_overlay_hwnd == null) {
+        self.resize_overlay_hwnd = w32.CreateWindowExW(
+            w32.WS_EX_TOOLWINDOW | w32.WS_EX_NOACTIVATE,
+            std.unicode.utf8ToUtf16LeStringLiteral("STATIC"),
+            std.unicode.utf8ToUtf16LeStringLiteral(""),
+            w32.WS_POPUP | w32.WS_BORDER | w32.SS_CENTER | w32.SS_CENTERIMAGE,
+            0,
+            0,
+            10,
+            10,
+            hwnd,
+            null,
+            self.app.hinstance,
+            null,
+        );
+        if (self.resize_overlay_hwnd) |h| {
+            if (self.tab_font) |f| {
+                _ = w32.SendMessageW(h, w32.WM_SETFONT, @intFromPtr(f), 1);
+            }
+        }
+    }
+    const overlay = self.resize_overlay_hwnd orelse return;
+    _ = w32.SetWindowTextW(overlay, @ptrCast(&buf16));
+
+    // Position within the client area per resize-overlay-position.
+    const s = self.scale;
+    const ow: i32 = @intFromFloat(@round(110.0 * s));
+    const oh: i32 = @intFromFloat(@round(34.0 * s));
+    const margin: i32 = @intFromFloat(@round(16.0 * s));
+    var client: w32.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+    _ = w32.GetClientRect(hwnd, &client);
+    const cw = client.right - client.left;
+    const ch = client.bottom - client.top;
+    const cx = @divTrunc(cw - ow, 2);
+    const cy = @divTrunc(ch - oh, 2);
+    var pt: w32.POINT = switch (self.app.config.@"resize-overlay-position") {
+        .center => .{ .x = cx, .y = cy },
+        .@"top-left" => .{ .x = margin, .y = margin },
+        .@"top-center" => .{ .x = cx, .y = margin },
+        .@"top-right" => .{ .x = cw - ow - margin, .y = margin },
+        .@"bottom-left" => .{ .x = margin, .y = ch - oh - margin },
+        .@"bottom-center" => .{ .x = cx, .y = ch - oh - margin },
+        .@"bottom-right" => .{ .x = cw - ow - margin, .y = ch - oh - margin },
+    };
+    _ = w32.ClientToScreen(hwnd, &pt);
+    _ = w32.SetWindowPos(overlay, null, pt.x, pt.y, ow, oh, w32.SWP_NOACTIVATE | w32.SWP_NOZORDER);
+    _ = w32.ShowWindow(overlay, w32.SW_SHOWNOACTIVATE);
+
+    // (Re-)arm the auto-hide timer.
+    const dur_ns = self.app.config.@"resize-overlay-duration".duration;
+    const dur_ms: u32 = @intCast(@max(1, dur_ns / std.time.ns_per_ms));
+    _ = w32.SetTimer(hwnd, RESIZE_OVERLAY_TIMER_ID, dur_ms, null);
 }
 
 /// Handle a left-button click in the tab bar region.
@@ -1835,6 +1953,15 @@ pub fn windowWndProc(
             if (lparam == w32.OBJID_CLIENT) return 0;
             return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
+        w32.WM_TIMER => {
+            if (wparam == RESIZE_OVERLAY_TIMER_ID) {
+                if (window.resize_overlay_hwnd) |h| _ = w32.ShowWindow(h, w32.SW_HIDE);
+                _ = w32.KillTimer(hwnd, RESIZE_OVERLAY_TIMER_ID);
+                return 0;
+            }
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
         w32.WM_SIZE => {
             // Minimizing does not hide child surface HWNDs, so tell the core
             // to stop rendering the active tab while minimized, and resume on
