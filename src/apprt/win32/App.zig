@@ -92,6 +92,12 @@ global_hotkeys: std.ArrayList(GlobalHotkey) = .empty,
 /// Cached ITaskbarList3 for taskbar-button progress (OSC 9;4), created lazily
 /// on first progress_report. Null until then / if COM creation fails.
 taskbar: ?*w32.ITaskbarList3 = null,
+
+/// Core surface id of the surface that produced the current desktop
+/// notification balloon; a balloon click focuses it. 0 = app-targeted.
+/// A single id suffices: there is one NOTIF_DESKTOP_UID tray balloon and
+/// each new notification overwrites it.
+notif_desktop_surface_id: u64 = 0,
 /// Whether CoInitializeEx has been called on the main thread.
 com_initialized: bool = false,
 
@@ -708,9 +714,23 @@ pub fn performAction(
             return true;
         },
 
-        .search_total, .search_selected => {
-            // Acknowledge — we could display match count in the search
-            // bar in the future.
+        .search_total => {
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    core_surface.rt_surface.setSearchTotal(value.total);
+                },
+            }
+            return true;
+        },
+
+        .search_selected => {
+            switch (target) {
+                .app => {},
+                .surface => |core_surface| {
+                    core_surface.rt_surface.setSearchSelected(value.selected);
+                },
+            }
             return true;
         },
 
@@ -1134,25 +1154,59 @@ pub fn performAction(
         },
 
         .command_finished => {
-            // Flash the taskbar button if the window isn't currently the
-            // foreground window. macOS bounces the dock icon for the
-            // same reason. We only flash on non-zero exit codes — a
-            // successful command shouldn't pull the user back.
+            // The core emits this for every finished command; all gating is
+            // apprt-side (config notify-on-command-finish*), matching the
+            // GTK and macOS runtimes.
             switch (target) {
                 .app => {},
                 .surface => |core_surface| {
-                    if (value.exit_code orelse 0 == 0) return true;
-                    const win_hwnd = core_surface.rt_surface.parent_window.hwnd orelse return true;
-                    const fg = w32.GetForegroundWindow();
-                    if (fg == win_hwnd) return true;
-                    var fwi: w32.FLASHWINFO = .{
-                        .cbSize = @sizeOf(w32.FLASHWINFO),
-                        .hwnd = win_hwnd,
-                        .dwFlags = w32.FLASHW_ALL | w32.FLASHW_TIMERNOFG,
-                        .uCount = 3,
-                        .dwTimeout = 0,
-                    };
-                    _ = w32.FlashWindowEx(&fwi);
+                    switch (self.config.@"notify-on-command-finish") {
+                        .never => return true,
+                        .unfocused => if (core_surface.focused) return true,
+                        .always => {},
+                    }
+                    if (value.duration.lte(self.config.@"notify-on-command-finish-after"))
+                        return true;
+
+                    const act = self.config.@"notify-on-command-finish-action";
+                    if (act.bell) {
+                        _ = w32.MessageBeep(0xFFFFFFFF);
+                        // Flash the taskbar button when backgrounded so the
+                        // bell is visible too.
+                        if (core_surface.rt_surface.parent_window.hwnd) |win_hwnd| {
+                            if (w32.GetForegroundWindow() != win_hwnd) {
+                                var fwi: w32.FLASHWINFO = .{
+                                    .cbSize = @sizeOf(w32.FLASHWINFO),
+                                    .hwnd = win_hwnd,
+                                    .dwFlags = w32.FLASHW_ALL | w32.FLASHW_TIMERNOFG,
+                                    .uCount = 3,
+                                    .dwTimeout = 0,
+                                };
+                                _ = w32.FlashWindowEx(&fwi);
+                            }
+                        }
+                    }
+                    if (act.notify) {
+                        const title: []const u8 = if (value.exit_code) |code|
+                            (if (code == 0) "Command Succeeded" else "Command Failed")
+                        else
+                            "Command Finished";
+                        var body_buf: [128]u8 = undefined;
+                        const body: []const u8 = if (value.exit_code) |code|
+                            std.fmt.bufPrint(
+                                &body_buf,
+                                "Command took {f} and exited with code {d}.",
+                                .{ value.duration.round(std.time.ns_per_ms), code },
+                            ) catch "Command finished."
+                        else
+                            std.fmt.bufPrint(
+                                &body_buf,
+                                "Command took {f}.",
+                                .{value.duration.round(std.time.ns_per_ms)},
+                            ) catch "Command finished.";
+                        self.notif_desktop_surface_id = core_surface.id;
+                        self.showDesktopNotificationText(title, body);
+                    }
                 },
             }
             return true;
@@ -1757,26 +1811,39 @@ fn showDesktopNotification(
     target: apprt.Target,
     value: apprt.Action.Value(.desktop_notification),
 ) void {
-    _ = target;
+    // Remember the originating surface so a balloon click can focus it.
+    self.notif_desktop_surface_id = switch (target) {
+        .app => 0,
+        .surface => |core_surface| core_surface.id,
+    };
+    self.showDesktopNotificationText(value.title, value.body);
+}
+
+/// Show a desktop toast with the given title/body via the tray icon. The
+/// balloon click is delivered as WM_APP_TRAY (NIF_MESSAGE) and focuses the
+/// surface stored in notif_desktop_surface_id, mirroring macOS/GTK where
+/// clicking a notification presents the originating surface.
+fn showDesktopNotificationText(self: *App, title: []const u8, body: []const u8) void {
     const hwnd = self.msg_hwnd orelse return;
 
     var nid: w32.NOTIFYICONDATAW = std.mem.zeroes(w32.NOTIFYICONDATAW);
     nid.cbSize = @sizeOf(w32.NOTIFYICONDATAW);
     nid.hWnd = hwnd;
     nid.uID = NOTIF_DESKTOP_UID;
-    nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP;
+    nid.uFlags = w32.NIF_INFO | w32.NIF_ICON | w32.NIF_TIP | w32.NIF_MESSAGE;
+    nid.uCallbackMessage = WM_APP_TRAY;
     nid.hIcon = w32.LoadIconW(self.hinstance, w32.IDI_GHOSTTY) orelse w32.LoadIconW(null, w32.IDI_APPLICATION);
     nid.dwInfoFlags = w32.NIIF_INFO;
     nid.uVersion_or_uTimeout = 5000; // 5 second timeout
 
     // Copy title (UTF-8 → UTF-16LE)
-    const title_z = value.title;
+    const title_z = title;
     var title_len = std.unicode.utf8ToUtf16Le(&nid.szInfoTitle, title_z) catch 0;
     if (title_len >= nid.szInfoTitle.len) title_len = nid.szInfoTitle.len - 1;
     nid.szInfoTitle[title_len] = 0;
 
     // Copy body (UTF-8 → UTF-16LE)
-    const body_z = value.body;
+    const body_z = body;
     var body_len = std.unicode.utf8ToUtf16Le(&nid.szInfo, body_z) catch 0;
     if (body_len >= nid.szInfo.len) body_len = nid.szInfo.len - 1;
     nid.szInfo[body_len] = 0;
@@ -2147,6 +2214,17 @@ fn surfaceWndProc(
             return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
+        w32.WM_CTLCOLORSTATIC => {
+            // Dark mode colors for the search match-count label.
+            const hdc_static: w32.HDC = @ptrFromInt(wparam);
+            _ = w32.SetTextColor(hdc_static, w32.RGB(160, 160, 160));
+            _ = w32.SetBkColor(hdc_static, w32.RGB(45, 45, 45));
+            if (surface.app.bg_brush) |brush| {
+                return @bitCast(@intFromPtr(@as(*const anyopaque, @ptrCast(brush))));
+            }
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
         w32.WM_ACTIVATE => {
             // Dismiss command palette when it loses focus
             if (is_palette_popup) {
@@ -2210,6 +2288,22 @@ fn msgWndProc(
         // NIN_BALLOONUSERCLICK on the update notification, opening the
         // GitHub releases page in the user's default browser.
         const event: u32 = @intCast(lparam & 0xFFFF);
+        if (wparam == NOTIF_DESKTOP_UID and event == w32.NIN_BALLOONUSERCLICK) {
+            // Focus the surface that produced the notification (click-to-
+            // focus, matching macOS/GTK).
+            if (app.notif_desktop_surface_id != 0) {
+                if (app.core_app.findSurfaceByID(app.notif_desktop_surface_id)) |surface| {
+                    _ = app.performAction(
+                        .{ .surface = surface },
+                        .present_terminal,
+                        {},
+                    ) catch |err| {
+                        log.warn("present_terminal from notification failed err={}", .{err});
+                    };
+                }
+            }
+            return 0;
+        }
         if (wparam == NOTIF_UPDATE_UID and event == w32.NIN_BALLOONUSERCLICK) {
             var url_buf: [256]u16 = undefined;
             const url_len = std.unicode.utf8ToUtf16Le(&url_buf, RELEASES_URL) catch return 0;

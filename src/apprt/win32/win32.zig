@@ -780,6 +780,10 @@ pub extern "kernel32" fn GlobalFree(
 
 pub const WM_COMMAND: u32 = 0x0111;
 pub const WM_CTLCOLOREDIT: u32 = 0x0133;
+pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
+// STATIC control styles.
+pub const SS_RIGHT: u32 = 0x0002;
+pub const SS_CENTERIMAGE: u32 = 0x0200;
 
 // Edit control notification codes (high word of wParam in WM_COMMAND)
 pub const EN_CHANGE: u16 = 0x0300;

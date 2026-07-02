@@ -116,6 +116,15 @@ search_active: bool = false,
 /// Font handle for the search edit (must be deleted on cleanup).
 search_font: ?*anyopaque = null,
 
+/// Right-aligned STATIC control in the search popup showing the
+/// "selected/total" match count (search_total / search_selected actions).
+search_count_label: ?w32.HWND = null,
+
+/// Last reported search match count and selected index (0-based), from
+/// the search_total / search_selected apprt actions.
+search_total: ?usize = null,
+search_selected: ?usize = null,
+
 /// Command palette popup HWND.
 palette_hwnd: ?w32.HWND = null,
 /// Edit control inside the command palette popup.
@@ -340,6 +349,7 @@ pub fn deinit(self: *Surface) void {
         _ = w32.DestroyWindow(popup);
         self.search_hwnd = null;
         self.search_edit = null;
+        self.search_count_label = null;
     }
     if (self.search_font) |f| {
         _ = w32.DeleteObject(f);
@@ -755,6 +765,37 @@ pub fn handleSetCursor(self: *Surface) bool {
 pub const SEARCH_EDIT_ID: u16 = 100;
 
 /// Show or hide the search bar.
+/// Store the total match count from the search_total action and refresh
+/// the "selected/total" label in the search bar.
+pub fn setSearchTotal(self: *Surface, total: ?usize) void {
+    self.search_total = total;
+    self.updateSearchCountLabel();
+}
+
+/// Store the selected match index (0-based) from the search_selected
+/// action and refresh the "selected/total" label in the search bar.
+pub fn setSearchSelected(self: *Surface, selected: ?usize) void {
+    self.search_selected = selected;
+    self.updateSearchCountLabel();
+}
+
+fn updateSearchCountLabel(self: *Surface) void {
+    const label = self.search_count_label orelse return;
+    var buf8: [32]u8 = undefined;
+    const text8: []const u8 = blk: {
+        const total = self.search_total orelse break :blk "";
+        if (total == 0) break :blk "0/0";
+        if (self.search_selected) |sel| {
+            break :blk std.fmt.bufPrint(&buf8, "{d}/{d}", .{ sel + 1, total }) catch "";
+        }
+        break :blk std.fmt.bufPrint(&buf8, "-/{d}", .{total}) catch "";
+    };
+    var buf16: [64]u16 = undefined;
+    const len16 = std.unicode.utf8ToUtf16Le(&buf16, text8) catch 0;
+    buf16[len16] = 0;
+    _ = w32.SetWindowTextW(label, @ptrCast(&buf16));
+}
+
 pub fn setSearchActive(self: *Surface, active: bool, needle: [:0]const u8) void {
     if (active) {
         // Close command palette if open (mutual exclusion)
@@ -786,6 +827,9 @@ pub fn setSearchActive(self: *Surface, active: bool, needle: [:0]const u8) void 
         }
     } else {
         self.search_active = false;
+        self.search_total = null;
+        self.search_selected = null;
+        self.updateSearchCountLabel();
         if (self.search_hwnd) |popup| {
             _ = w32.ShowWindow(popup, 0); // SW_HIDE
         }
@@ -841,7 +885,9 @@ fn ensureSearchBar(self: *Surface) void {
         null,
     );
 
-    // Create the Edit control inside the popup
+    // Create the Edit control inside the popup, leaving room on the right
+    // for the match-count label ("3/17").
+    const count_w: i32 = @intFromFloat(@round(64.0 * s));
     const edit = w32.CreateWindowExW(
         0,
         std.unicode.utf8ToUtf16LeStringLiteral("EDIT"),
@@ -849,7 +895,7 @@ fn ensureSearchBar(self: *Surface) void {
         w32.WS_CHILD | w32.WS_VISIBLE_STYLE | w32.ES_AUTOHSCROLL,
         pad,
         pad,
-        bar_w - pad * 2 - 2,
+        bar_w - pad * 2 - 2 - count_w,
         bar_h - pad * 2 - 2,
         popup,
         @ptrFromInt(@as(usize, SEARCH_EDIT_ID)),
@@ -859,6 +905,23 @@ fn ensureSearchBar(self: *Surface) void {
         _ = w32.DestroyWindow(popup);
         return;
     };
+
+    // Right-aligned match-count label, filled by search_total /
+    // search_selected actions (see setSearchTotal/setSearchSelected).
+    self.search_count_label = w32.CreateWindowExW(
+        0,
+        std.unicode.utf8ToUtf16LeStringLiteral("STATIC"),
+        std.unicode.utf8ToUtf16LeStringLiteral(""),
+        w32.WS_CHILD | w32.WS_VISIBLE_STYLE | w32.SS_RIGHT | w32.SS_CENTERIMAGE,
+        bar_w - pad - count_w,
+        pad,
+        count_w - pad,
+        bar_h - pad * 2 - 2,
+        popup,
+        null,
+        self.app.hinstance,
+        null,
+    );
 
     // Set a readable font (DPI-scaled)
     self.search_font = w32.CreateFontW(
@@ -879,6 +942,9 @@ fn ensureSearchBar(self: *Surface) void {
     );
     if (self.search_font) |f| {
         _ = w32.SendMessageW(edit, w32.WM_SETFONT, @intFromPtr(f), 1);
+        if (self.search_count_label) |label| {
+            _ = w32.SendMessageW(label, w32.WM_SETFONT, @intFromPtr(f), 1);
+        }
     }
 
     // Set GWLP_USERDATA on the popup so surfaceWndProc can route
@@ -1892,9 +1958,84 @@ pub fn handleMouseButton(
         log.err("cursor pos callback error: {}", .{err});
     };
 
-    _ = self.core_surface.mouseButtonCallback(action, button, mods) catch |err| {
+    const consumed = self.core_surface.mouseButtonCallback(action, button, mods) catch |err| blk: {
         log.err("mouse button callback error: {}", .{err});
+        break :blk true;
     };
+
+    // Unconsumed right-press under the default right-click-action =
+    // context-menu: the core has already selected the hovered word/link
+    // and returned false, signalling the apprt to show its context menu
+    // (same contract the GTK apprt follows).
+    if (!consumed and button == .right and action == .press) {
+        self.showContextMenu(lparam);
+    }
+}
+
+/// Show the surface right-click context menu at the given client coords
+/// (packed in lparam like a mouse message). Items dispatch through the
+/// core's binding actions, mirroring the macOS surface menu.
+fn showContextMenu(self: *Surface, lparam: isize) void {
+    const hwnd = self.hwnd orelse return;
+
+    // The press handler took mouse capture; release it and clear the mask
+    // before the modal menu loop, otherwise the pending button-up is
+    // captured and immediately dismisses the menu.
+    if (self.mouse_button_mask != 0) {
+        self.mouse_button_mask = 0;
+        _ = w32.ReleaseCapture();
+    }
+
+    const CTX_COPY: usize = 1;
+    const CTX_PASTE: usize = 2;
+    const CTX_SELECT_ALL: usize = 3;
+    const CTX_SPLIT_RIGHT: usize = 4;
+    const CTX_SPLIT_DOWN: usize = 5;
+    const CTX_RESET: usize = 6;
+
+    const menu = w32.CreatePopupMenu() orelse return;
+    defer _ = w32.DestroyMenu(menu);
+
+    const has_sel = self.core_surface.hasSelection();
+    _ = w32.AppendMenuW(menu, if (has_sel) w32.MF_STRING else w32.MF_GRAYED, CTX_COPY, std.unicode.utf8ToUtf16LeStringLiteral("Copy"));
+    _ = w32.AppendMenuW(menu, w32.MF_STRING, CTX_PASTE, std.unicode.utf8ToUtf16LeStringLiteral("Paste"));
+    _ = w32.AppendMenuW(menu, w32.MF_SEPARATOR, 0, null);
+    _ = w32.AppendMenuW(menu, w32.MF_STRING, CTX_SELECT_ALL, std.unicode.utf8ToUtf16LeStringLiteral("Select All"));
+    _ = w32.AppendMenuW(menu, w32.MF_SEPARATOR, 0, null);
+    _ = w32.AppendMenuW(menu, w32.MF_STRING, CTX_SPLIT_RIGHT, std.unicode.utf8ToUtf16LeStringLiteral("Split Right"));
+    _ = w32.AppendMenuW(menu, w32.MF_STRING, CTX_SPLIT_DOWN, std.unicode.utf8ToUtf16LeStringLiteral("Split Down"));
+    _ = w32.AppendMenuW(menu, w32.MF_SEPARATOR, 0, null);
+    _ = w32.AppendMenuW(menu, w32.MF_STRING, CTX_RESET, std.unicode.utf8ToUtf16LeStringLiteral("Reset Terminal"));
+
+    var pt = w32.POINT{
+        .x = @intCast(@as(i16, @truncate(@as(isize, lparam & 0xFFFF)))),
+        .y = @intCast(@as(i16, @truncate(@as(isize, (lparam >> 16) & 0xFFFF)))),
+    };
+    _ = w32.ClientToScreen(hwnd, &pt);
+
+    const cmd = w32.TrackPopupMenuEx(
+        menu,
+        w32.TPM_LEFTALIGN | w32.TPM_TOPALIGN | w32.TPM_RETURNCMD,
+        pt.x,
+        pt.y,
+        hwnd,
+        null,
+    );
+
+    const binding: ?input.Binding.Action = switch (@as(usize, @intCast(cmd))) {
+        CTX_COPY => .{ .copy_to_clipboard = .mixed },
+        CTX_PASTE => .paste_from_clipboard,
+        CTX_SELECT_ALL => .select_all,
+        CTX_SPLIT_RIGHT => .{ .new_split = .right },
+        CTX_SPLIT_DOWN => .{ .new_split = .down },
+        CTX_RESET => .reset,
+        else => null,
+    };
+    if (binding) |b| {
+        _ = self.core_surface.performBindingAction(b) catch |err| {
+            log.err("context menu action failed err={}", .{err});
+        };
+    }
 }
 
 /// Handle WM_MOUSEMOVE.
