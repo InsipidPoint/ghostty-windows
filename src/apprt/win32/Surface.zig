@@ -500,6 +500,11 @@ pub fn getTitle(self: *const Surface) ?[:0]const u8 {
 /// (src/renderer/Thread.zig). The core mailbox dedupes redundant states, so
 /// re-asserting the same visibility (e.g. on every layout pass) is cheap.
 pub fn setVisible(self: *Surface, visible: bool) void {
+    // Hide the hovered-URL bubble when this surface is occluded so a stale
+    // preview doesn't float over the newly-active tab.
+    if (!visible) {
+        if (self.link_preview_hwnd) |h| _ = w32.ShowWindow(h, w32.SW_HIDE);
+    }
     if (!self.core_surface_ready) return;
     self.core_surface.occlusionCallback(visible) catch |err| {
         log.warn("occlusionCallback failed err={}", .{err});
@@ -575,73 +580,75 @@ pub fn clipboardRequest(
 
     const alloc = self.app.core_app.alloc;
 
-    if (w32.OpenClipboard(self.hwnd) == 0) {
-        log.warn("OpenClipboard failed", .{});
-        return false;
-    }
-    defer _ = w32.CloseClipboard();
+    // Read the clipboard into an owned UTF-8 string in a tight scope so the
+    // system clipboard is CLOSED before any modal confirmation dialog — the
+    // dialog can be up for an unbounded time and would otherwise block every
+    // other process's clipboard access.
+    const utf8z: [:0]const u8 = blk: {
+        if (w32.OpenClipboard(self.hwnd) == 0) {
+            log.warn("OpenClipboard failed", .{});
+            return false;
+        }
+        defer _ = w32.CloseClipboard();
 
-    // Retrieve CF_UNICODETEXT (UTF-16LE, null-terminated).
-    const hglobal = w32.GetClipboardData(w32.CF_UNICODETEXT) orelse {
-        // No text on the clipboard.
-        return false;
+        const hglobal = w32.GetClipboardData(w32.CF_UNICODETEXT) orelse return false;
+        const ptr16 = w32.GlobalLock(hglobal) orelse {
+            log.warn("GlobalLock failed", .{});
+            return false;
+        };
+        defer _ = w32.GlobalUnlock(hglobal);
+
+        const wptr: [*]const u16 = @ptrCast(@alignCast(ptr16));
+        var wlen: usize = 0;
+        while (wptr[wlen] != 0) wlen += 1;
+
+        const utf8 = std.unicode.utf16LeToUtf8Alloc(alloc, wptr[0..wlen]) catch |err| {
+            log.warn("utf16LeToUtf8Alloc failed: {}", .{err});
+            return false;
+        };
+        defer alloc.free(utf8);
+        break :blk try alloc.dupeZ(u8, utf8);
     };
-
-    const ptr16 = w32.GlobalLock(hglobal) orelse {
-        log.warn("GlobalLock failed", .{});
-        return false;
-    };
-    defer _ = w32.GlobalUnlock(hglobal);
-
-    // Reinterpret the byte pointer as a u16 pointer for UTF-16LE data.
-    const wptr: [*]const u16 = @ptrCast(@alignCast(ptr16));
-
-    // Find the null terminator to get the length in u16 code units.
-    var wlen: usize = 0;
-    while (wptr[wlen] != 0) wlen += 1;
-
-    // Convert UTF-16LE to a UTF-8 slice owned by the allocator.
-    const utf8 = std.unicode.utf16LeToUtf8Alloc(alloc, wptr[0..wlen]) catch |err| {
-        log.warn("utf16LeToUtf8Alloc failed: {}", .{err});
-        return false;
-    };
-    defer alloc.free(utf8);
-
-    // Null-terminate for completeClipboardRequest.
-    const utf8z = try alloc.dupeZ(u8, utf8);
     defer alloc.free(utf8z);
 
-    // Complete the request with confirmed=false so the core runs its
-    // safety checks. If it flags the paste as unsafe (paste-protection) or
-    // the OSC 52 read as unauthorized (clipboard-read = ask), prompt the
-    // user and only re-complete with confirmed=true on approval. Passing
-    // confirmed=true up front — as this used to — silently disabled both
-    // guards on Windows.
-    self.core_surface.completeClipboardRequest(state, utf8z, false) catch |err| switch (err) {
-        error.UnsafePaste => {
-            if (self.confirmClipboard(
+    // The confirmation prompt below runs a modal message loop that can tick
+    // the core (child-exited → surface close → this Surface freed). Capture
+    // what we need to re-resolve the surface by id afterwards rather than
+    // dereferencing `self`.
+    const core_app = self.app.core_app;
+    const surface_id = self.core_surface.id;
+
+    // Complete with confirmed=false so the core runs its safety checks. If it
+    // flags the paste as unsafe (paste-protection) or the OSC 52 read as
+    // unauthorized (clipboard-read = ask), prompt and only re-complete with
+    // confirmed=true on approval. Passing confirmed=true up front — as this
+    // used to — silently disabled both guards on Windows.
+    self.core_surface.completeClipboardRequest(state, utf8z, false) catch |err| {
+        // confirmClipboard takes comptime strings (utf8ToUtf16LeStringLiteral),
+        // so each error path calls it with its own literals. `self` may be
+        // freed while the modal dialog pumps messages, so re-resolve the
+        // surface by id before re-completing.
+        const approved = switch (err) {
+            error.UnsafePaste => self.confirmClipboard(
                 "The text being pasted contains characters that could run " ++
                     "commands unexpectedly (for example, newlines).\n\nPaste anyway?",
                 "Ghostty \u{2014} Potentially Unsafe Paste",
-            )) {
-                self.core_surface.completeClipboardRequest(state, utf8z, true) catch |e| {
-                    log.err("completeClipboardRequest (confirmed) error: {}", .{e});
-                };
-            }
-        },
-        error.UnauthorizedPaste => {
-            if (self.confirmClipboard(
+            ),
+            error.UnauthorizedPaste => self.confirmClipboard(
                 "An application is requesting access to read the clipboard.\n\nAllow this?",
                 "Ghostty \u{2014} Authorize Clipboard Access",
-            )) {
-                self.core_surface.completeClipboardRequest(state, utf8z, true) catch |e| {
-                    log.err("completeClipboardRequest (confirmed) error: {}", .{e});
-                };
-            }
-        },
-        else => {
-            log.err("completeClipboardRequest error: {}", .{err});
-        },
+            ),
+            else => {
+                log.err("completeClipboardRequest error: {}", .{err});
+                return true;
+            },
+        };
+        if (approved) {
+            const cs = core_app.findSurfaceByID(surface_id) orelse return true;
+            cs.completeClipboardRequest(state, utf8z, true) catch |e| {
+                log.err("completeClipboardRequest (confirmed) error: {}", .{e});
+            };
+        }
     };
 
     return true;
@@ -655,6 +662,11 @@ pub fn setClipboard(
 ) !void {
     // Only the standard clipboard is supported on Win32.
     if (clipboard_type != .standard) return;
+
+    // The confirm dialog below pumps messages and can free `self` (child
+    // exit → surface close). Capture the App (stable for the process) and
+    // avoid dereferencing `self` after the prompt.
+    const app = self.app;
 
     // When the core requests confirmation (e.g. an OSC 52 clipboard write
     // with clipboard-write = ask), prompt before writing. Previously the
@@ -675,7 +687,7 @@ pub fn setClipboard(
         return;
     };
 
-    const alloc = self.app.core_app.alloc;
+    const alloc = app.core_app.alloc;
 
     // Convert UTF-8 to UTF-16LE.  Add 1 for the null terminator.
     const utf16 = try std.unicode.utf8ToUtf16LeAlloc(alloc, text);
@@ -703,7 +715,8 @@ pub fn setClipboard(
 
     _ = w32.GlobalUnlock(hglobal);
 
-    if (w32.OpenClipboard(self.hwnd) == 0) {
+    // null owner: the write is not tied to the (possibly freed) surface hwnd.
+    if (w32.OpenClipboard(null) == 0) {
         log.warn("OpenClipboard failed for clipboard write", .{});
         _ = w32.GlobalFree(hglobal);
         return;
@@ -1527,7 +1540,12 @@ pub fn paintPalette(self: *Surface, hwnd: w32.HWND) void {
             .bottom = y + item_height,
         };
         var wname_buf: [128]u16 = undefined;
-        const wname_len = std.unicode.utf8ToUtf16Le(&wname_buf, entry_name) catch 0;
+        // User-configured palette titles are arbitrary length; cap to the
+        // buffer (N UTF-8 bytes ≤ N UTF-16 units) on a codepoint boundary so
+        // a long title truncates instead of overflowing the stack buffer.
+        var name_len = @min(entry_name.len, wname_buf.len);
+        while (name_len > 0 and entry_name[name_len - 1] & 0xC0 == 0x80) name_len -= 1;
+        const wname_len = std.unicode.utf8ToUtf16Le(&wname_buf, entry_name[0..name_len]) catch 0;
         _ = w32.DrawTextW(hdc, @ptrCast(&wname_buf), @intCast(wname_len), &name_rect, 0);
 
         // Draw keybinding hint on the right
@@ -1800,6 +1818,11 @@ pub fn handleDpiChange(self: *Surface) void {
         );
         if (self.search_font) |f| {
             _ = w32.SendMessageW(edit, w32.WM_SETFONT, @intFromPtr(f), 1);
+            // The count label shares the search font; re-send it too or the
+            // label keeps a handle to the just-deleted HFONT.
+            if (self.search_count_label) |label| {
+                _ = w32.SendMessageW(label, w32.WM_SETFONT, @intFromPtr(f), 1);
+            }
         }
     }
     if (self.palette_edit) |edit| {
@@ -2106,6 +2129,14 @@ fn showContextMenu(self: *Surface, lparam: isize) void {
         _ = w32.ReleaseCapture();
     }
 
+    // TrackPopupMenuEx's modal loop takes capture and swallows the physical
+    // WM_RBUTTONUP, so the core would never see the right-button release and
+    // would leave click_state[right] stuck at .press (corrupting later mouse
+    // motion). Synthesize the release now.
+    _ = self.core_surface.mouseButtonCallback(.release, .right, getModifiers()) catch |err| {
+        log.err("mouse button callback error: {}", .{err});
+    };
+
     const CTX_COPY: usize = 1;
     const CTX_PASTE: usize = 2;
     const CTX_SELECT_ALL: usize = 3;
@@ -2320,6 +2351,12 @@ pub fn handleImeComposition(self: *Surface, lparam: isize) bool {
         const actual_len: usize = @intCast(@divTrunc(got, 2));
         self.sendImeText(buf[0..actual_len]);
     }
+
+    // GCS_RESULTSTR and GCS_COMPSTR can arrive together (e.g. an IME commits
+    // a syllable while starting the next). We cleared the preedit above for
+    // the result; re-mirror the new composition so it isn't invisible until
+    // the next keystroke.
+    if (flags & w32.GCS_COMPSTR != 0) self.updateImePreedit();
 
     // Reposition the IME window for the next composition
     self.positionImeWindow();
@@ -2552,6 +2589,19 @@ pub fn handleFocus(self: *Surface, focused: bool) void {
     // otherwise they would combine with the next character when focus returns.
     if (!focused) {
         self.high_surrogate = 0;
+        // Composition messages follow keyboard focus, so a split losing
+        // focus mid-composition never gets its own WM_IME_ENDCOMPOSITION.
+        // Cancel the composition and clear its inline preedit now.
+        if (self.ime_composing) {
+            self.ime_composing = false;
+            if (self.hwnd) |hwnd| {
+                if (w32.ImmGetContext(hwnd)) |himc| {
+                    defer _ = w32.ImmReleaseContext(hwnd, himc);
+                    _ = w32.ImmNotifyIME(himc, w32.NI_COMPOSITIONSTR, w32.CPS_CANCEL, 0);
+                }
+            }
+            self.core_surface.preeditCallback(null) catch {};
+        }
         // Drain any pending dead-key state so an unfinished compose
         // doesn't bleed into the next focused surface or another app.
         var ks: [256]u8 = undefined;

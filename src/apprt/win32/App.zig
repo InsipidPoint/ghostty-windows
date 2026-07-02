@@ -571,6 +571,11 @@ pub fn performAction(
                 // the background color updates the title bar.
                 for (self.windows.items) |w| w.onConfigChange();
 
+                // Re-register global hotkeys against the new keybinds.
+                for (self.global_hotkeys.items) |hk| _ = w32.UnregisterHotKey(null, hk.id);
+                self.global_hotkeys.clearRetainingCapacity();
+                self.registerGlobalHotkey();
+
                 // Update quick terminal config.
                 if (self.quick_terminal) |qt| {
                     qt.onConfigChange(&self.config);

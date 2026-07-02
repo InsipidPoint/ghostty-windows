@@ -245,10 +245,17 @@ pub fn init(self: *Window, app: *App, options: InitOptions) !void {
     var cx: i32 = w32.CW_USEDEFAULT;
     var cy: i32 = w32.CW_USEDEFAULT;
     // Honor an explicit configured window position; it takes precedence over
-    // the cascade below.
+    // the cascade below. Only when BOTH coordinates are set — passing
+    // CW_USEDEFAULT for one axis is not a valid literal coordinate (Win32
+    // only special-cases it on x, and would use a huge negative y or treat
+    // y as nCmdShow), so a partial config falls back to full default.
     if (!options.is_quick_terminal) {
-        if (app.config.@"window-position-x") |px| cx = px;
-        if (app.config.@"window-position-y") |py| cy = py;
+        if (app.config.@"window-position-x") |px| {
+            if (app.config.@"window-position-y") |py| {
+                cx = px;
+                cy = py;
+            }
+        }
     }
     if (!options.is_quick_terminal and
         cx == w32.CW_USEDEFAULT and cy == w32.CW_USEDEFAULT and
@@ -1435,9 +1442,9 @@ fn showResizeOverlay(self: *Window) void {
     _ = w32.SetWindowPos(overlay, null, pt.x, pt.y, ow, oh, w32.SWP_NOACTIVATE | w32.SWP_NOZORDER);
     _ = w32.ShowWindow(overlay, w32.SW_SHOWNOACTIVATE);
 
-    // (Re-)arm the auto-hide timer.
-    const dur_ns = self.app.config.@"resize-overlay-duration".duration;
-    const dur_ms: u32 = @intCast(@max(1, dur_ns / std.time.ns_per_ms));
+    // (Re-)arm the auto-hide timer. asMilliseconds saturates, so huge
+    // configured durations don't overflow the u32 SetTimer argument.
+    const dur_ms: u32 = @max(1, self.app.config.@"resize-overlay-duration".asMilliseconds());
     _ = w32.SetTimer(hwnd, RESIZE_OVERLAY_TIMER_ID, dur_ms, null);
 }
 
@@ -1962,14 +1969,31 @@ pub fn windowWndProc(
             return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
+        w32.WM_CTLCOLORSTATIC => {
+            // Dark theming for the STATIC popups owned by this window
+            // (hovered-URL link preview, resize overlay). Static controls
+            // send this to their owner, i.e. here — not to surfaceWndProc.
+            const hdc_static: w32.HDC = @ptrFromInt(wparam);
+            _ = w32.SetTextColor(hdc_static, w32.RGB(220, 220, 220));
+            _ = w32.SetBkColor(hdc_static, w32.RGB(45, 45, 45));
+            if (window.app.bg_brush) |brush| {
+                return @bitCast(@intFromPtr(@as(*const anyopaque, @ptrCast(brush))));
+            }
+            return w32.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
         w32.WM_SIZE => {
             // Minimizing does not hide child surface HWNDs, so tell the core
-            // to stop rendering the active tab while minimized, and resume on
-            // restore/maximize.
-            switch (wparam) {
-                w32.SIZE_MINIMIZED => window.setActiveTabVisible(false),
-                w32.SIZE_RESTORED, w32.SIZE_MAXIMIZED => window.setActiveTabVisible(true),
-                else => {},
+            // to stop rendering the active tab while minimized. Return early:
+            // the client rect is 0x0 while minimized, so re-laying-out would
+            // both re-mark the surfaces visible (undoing the occlusion) and
+            // collapse the grid, and the resize overlay would flash offscreen.
+            if (wparam == w32.SIZE_MINIMIZED) {
+                window.setActiveTabVisible(false);
+                return 0;
+            }
+            if (wparam == w32.SIZE_RESTORED or wparam == w32.SIZE_MAXIMIZED) {
+                window.setActiveTabVisible(true);
             }
             window.handleResize();
             return 0;

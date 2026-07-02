@@ -1003,6 +1003,15 @@ pub extern "imm32" fn ImmGetContext(
     hWnd: HWND,
 ) callconv(.winapi) ?HIMC;
 
+pub extern "imm32" fn ImmNotifyIME(
+    hIMC: HIMC,
+    dwAction: u32,
+    dwIndex: u32,
+    dwValue: u32,
+) callconv(.winapi) i32;
+pub const NI_COMPOSITIONSTR: u32 = 0x0015;
+pub const CPS_CANCEL: u32 = 0x0004;
+
 pub extern "imm32" fn ImmReleaseContext(
     hWnd: HWND,
     hIMC: HIMC,
