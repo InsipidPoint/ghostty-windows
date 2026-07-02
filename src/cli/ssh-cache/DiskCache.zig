@@ -522,6 +522,10 @@ test "disk cache cleans up temp files" {
 }
 
 test "disk cache prune" {
+    // See "disk cache operations": atomic-rename hits a persistent
+    // error.AccessDenied on the GitHub windows-latest runner filesystem.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const testing = std.testing;
     const alloc = testing.allocator;
 
@@ -653,6 +657,10 @@ test "disk cache reads survive allocation failure" {
 }
 
 test "disk cache add survives allocation failure" {
+    // See "disk cache operations": atomic-rename hits a persistent
+    // error.AccessDenied on the GitHub windows-latest runner filesystem.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const testing = std.testing;
 
     var tmp = testing.tmpDir(.{});
