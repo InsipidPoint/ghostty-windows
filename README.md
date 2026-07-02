@@ -29,7 +29,8 @@ The goal is to track the upstream main branch while maintaining a native Windows
 
 ## Status
 
-**Feature-complete** — 100% apprt action coverage (65/65 actions handled). The terminal is ready for daily use.
+**Feature-complete** — 100% apprt action coverage (66/66 actions handled),
+synced with upstream main. The terminal is ready for daily use.
 
 ### Features
 
@@ -38,7 +39,10 @@ The goal is to track the upstream main branch while maintaining a native Windows
 - FreeType + HarfBuzz fonts with DirectWrite system font discovery
 - ConPTY shell spawning (cmd.exe, PowerShell, WSL)
 - Win32 Input Mode (mode 9001) for full Unicode through ConPTY
-- IME support for CJK input (Japanese, Chinese, Korean)
+- IME support for CJK input (Japanese, Chinese, Korean) with the
+  composition (preedit) rendered inline at the cursor and the candidate
+  window anchored to it
+- AltGr layouts (German, Polish, …) encode correctly
 - Per-monitor DPI awareness, window resize with grid reflow
 - 463 built-in color themes (same as macOS)
 
@@ -53,8 +57,33 @@ The goal is to track the upstream main branch while maintaining a native Windows
 - Toggle split zoom, equalize all splits
 - Independent split tree per tab
 
+**Security**
+- Paste protection: unsafe/multi-line pastes prompt before reaching the
+  shell (`clipboard-paste-protection`)
+- OSC 52 clipboard read/write authorization prompts
+  (`clipboard-read` / `clipboard-write = ask`)
+
 **Extras**
-- Command palette with filterable actions and keybinding hints
+- Command palette with filterable actions, keybinding hints, and
+  user-defined entries (`command-palette-entry`)
+- Right-click context menu on the terminal (Copy / Paste / Select All /
+  Split / Reset)
+- Taskbar progress for OSC 9;4 progress reports (`ITaskbarList3`)
+- Global hotkeys for any `global:`-flagged keybind (not just the quick
+  terminal)
+- `window-theme` honored for the title bar (dark / light / system / auto)
+- Background blur (acrylic-style) behind translucent windows
+  (`background-blur` with `background-opacity < 1`)
+- Resize overlay showing columns × rows while resizing (`resize-overlay`)
+- Hovered-URL preview bubble (browser-style, bottom-left)
+- Search bar match counter ("3/17")
+- Command-finished notifications (`notify-on-command-finish*`): bell
+  and/or a desktop notification with duration and exit code
+- Desktop notifications are click-to-focus (raise the originating tab)
+- X1/X2 (back/forward) mouse buttons delivered to the terminal
+- `window-decoration = none` (borderless) and `window-position-x/y`
+- Renderer occlusion: hidden tabs, zoomed-out splits, and minimized
+  windows stop rendering (saves GPU/CPU/battery)
 - Quick terminal (slide-in/out from screen edge with global hotkey)
 - Find-in-terminal search bar
 - URL detection with Ctrl+click to open in browser
@@ -86,18 +115,30 @@ The goal is to track the upstream main branch while maintaining a native Windows
 
 Requires [Zig](https://ziglang.org/download/) 0.15.2 or newer.
 
-### Cross-compile from Linux/WSL2
+### Native build on Windows (recommended)
 
 ```bash
-zig build -Dapp-runtime=win32 -Dtarget=x86_64-windows
+zig build -Dapp-runtime=win32 -Dtarget=x86_64-windows-gnu
 ```
 
-The executable is at `zig-out/bin/ghostty.exe`. Copy it to a Windows path and run it.
+The executable is at `zig-out/bin/ghostty.exe`. Building with the native
+Windows Zig toolchain is the most reliable path and is also the
+authoritative compile check.
+
+### Cross-compile from Linux/WSL2
+
+The same command works from Linux with the GNU ABI target
+(`x86_64-windows-gnu` — the plain `x86_64-windows` target selects the MSVC
+ABI, which cannot cross-compile from Linux because it lacks the MSVC
+headers). Note that on some WSL setups the final exe link step fails with
+`AccessDenied`; if that happens, build with the native Windows Zig instead
+(e.g. from WSL interop: copy the source to an NTFS path and run
+`zig.exe build …` there).
 
 ### Release build
 
 ```bash
-zig build -Dapp-runtime=win32 -Dtarget=x86_64-windows -Doptimize=ReleaseFast
+zig build -Dapp-runtime=win32 -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
 ```
 
 To debug a release build with stderr visible, add `-Dwindows-console=true`

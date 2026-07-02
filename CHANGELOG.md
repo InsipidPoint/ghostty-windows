@@ -3,6 +3,69 @@
 All notable changes to the Ghostty Windows fork. Each release line includes
 the underlying upstream commit when known.
 
+## win-v1.2.0 — 2026-07-02
+
+Upstream sync (264 commits from `ghostty-org/ghostty` main, through
+`e1d31deaa`) plus a macOS-parity feature batch driven by a full audit of the
+Windows apprt against the macOS app, hardened by an adversarial review pass.
+
+### Fixed
+- **CJK IME input works again.** The message loop's `TranslateMessage` skip
+  (a dead-key fix) also swallowed `VK_PROCESSKEY`, so the IME never received
+  its keys and Chinese/Japanese/Korean composition never started. IME-claimed
+  keys are now exempt from the skip.
+- **Clipboard security guards were silently bypassed.** Paste-protection and
+  OSC 52 read/write authorization now actually prompt: `clipboardRequest`
+  completes with `confirmed=false` first and shows a confirmation dialog on
+  `UnsafePaste`/`UnauthorizedPaste`; `setClipboard` honors the confirm flag.
+  The dialog no longer holds the system clipboard open, and the surface is
+  re-resolved by id after the modal loop (a child exiting mid-dialog could
+  otherwise use freed memory).
+- AltGr layouts (German `@`, `[`, …) no longer encode as C0/CSIu control
+  sequences: the synthesized Ctrl+Alt is stripped from the encoded mods when
+  AltGr produced printable text.
+- Whole-window close (title-bar X, Alt+F4, `close_window`) now shows one
+  aggregate confirmation when any tab still has a running process.
+- `window-position-x/y` is honored only when both are set (a partial config
+  previously created the window off-screen).
+- libghostty-vt: selection gesture click-repeat timing was broken on Windows
+  (raw nanoseconds stored as QPC ticks); double/triple-click detection via
+  the C API now works. Regression test added.
+- Right-click context menu no longer leaves the core's right-button state
+  stuck pressed; minimized windows actually stop rendering; IME preedit is
+  cleared on focus loss and survives commit+recompose messages; search-bar
+  DPI changes no longer leave a deleted font on the match-count label.
+
+### Added
+- Inline IME preedit: the composition renders underlined at the cursor (the
+  default floating composition box is suppressed); candidate window follows
+  the cursor.
+- Taskbar progress for OSC 9;4 progress reports via `ITaskbarList3`
+  (remove/set/error/indeterminate/pause, gated on `progress-style`).
+- Surface right-click context menu (Copy / Paste / Select All / Split
+  Right / Split Down / Reset Terminal).
+- Command-finished notifications honoring `notify-on-command-finish`,
+  `-after`, and `-action` (bell and/or desktop notification with duration
+  and exit code).
+- Search bar match counter ("3/17") driven by `search_total` /
+  `search_selected`.
+- Desktop notifications are click-to-focus: clicking the balloon raises and
+  focuses the originating tab.
+- `window-theme` honored for the title bar (dark / light / system / auto),
+  with the caption tint reserved for the luminance-derived themes.
+- Global hotkeys generalized to every `global:`-flagged keybind, re-registered
+  on config reload.
+- `background-blur`: acrylic-style DWM blur behind translucent windows.
+- Resize overlay (columns × rows) honoring `resize-overlay`, `-position`,
+  and `-duration`.
+- Hovered-URL preview bubble at the bottom-left of the surface.
+- User-defined `command-palette-entry` commands in the command palette.
+- X1/X2 (back/forward) mouse buttons delivered to the terminal.
+- `window-decoration = none` creates a borderless (still resizable) window.
+- Renderer occlusion wired to tab switches, split zoom, and window
+  minimize/restore — hidden surfaces stop rebuilding frames.
+- A warning notification when the renderer reports an unhealthy state.
+
 ## win-v1.1.0 — 2026-05-17
 
 Upstream sync (63 commits from `ghostty-org/ghostty` main, through
